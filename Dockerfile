@@ -1,6 +1,6 @@
 # Pinned by digest (the multi-arch index), so a rebuild never silently picks
 # up a changed base image. Dependabot keeps the tag and digest up to date.
-FROM docker.io/library/node:24-bookworm-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5
+FROM docker.io/library/node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends bash ca-certificates curl fd-find git ripgrep \
