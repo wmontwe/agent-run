@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+# Hardened launcher: runs an agent on a Git workspace with .git and .idea
+# mounted read-only and .signing hidden, keeps shared memory to plain notes, and
+# reports changes the host may execute. Supports macOS bash 3.2.
+#
+# This file is the orchestrator: it holds the configuration and the order of
+# the checks. The checks themselves live in lib/ and are tested in tests/.
+set -euo pipefail
+
+usage() {
+    echo "usage: agent claude|codex|gemini|pi [command...]" >&2
+    echo "       agent trust-memory    record ~/.agent-run/memory/.git as yours" >&2
+    exit 2
+}
+
+[[ $# -ge 1 ]] || usage
+case "$1" in
+    claude|codex|gemini|pi) name="$1"; shift ;;
+    trust-memory) name="" ;;
+    *) usage ;;
+esac
+
+# The launcher root holds this script, lib/, compose.yaml and proxy/. Resolve
+# it through any symlink (e.g. ~/bin/agent), since the target is what runs.
+# Libraries are sourced only from there; the overlap check below keeps it out
+# of every agent's reach.
+entry="${BASH_SOURCE[0]}"
+while [[ -L "$entry" ]]; do
+    entry_dir="$(cd -P -- "$(dirname -- "$entry")" && pwd -P)"
+    entry="$(readlink -- "$entry")"
+    [[ "$entry" == /* ]] || entry="$entry_dir/$entry"
+done
+root="$(cd -P -- "$(dirname -- "$entry")/.." && pwd -P)"
+for lib in common protect git-guard memory report lock podman; do
+    [[ -f "$root/lib/$lib.sh" ]] || { echo "agent: $root/lib/$lib.sh not found" >&2; exit 1; }
+    # shellcheck source=/dev/null
+    . "$root/lib/$lib.sh"
+done
+[[ -f "$root/compose.yaml" ]] || die "compose.yaml not found in $root"
+
+# Memory's .git is only trusted with this record, which no container can reach.
+memory_marker="$HOME/.agent-run/memory.git-id"
+if [[ -z "$name" ]]; then
+    mem="$(canonical "$HOME/.agent-run/memory")" || die "missing $HOME/.agent-run/memory"
+    trust_memory_repo "$mem" "$memory_marker"
+    echo "Recorded $mem/.git as your memory repository."
+    exit 0
+fi
+
+# Signing material is hidden: an existing directory is covered by an empty
+# read-only one. IDE configuration stays readable but is mounted read-only,
+# since run configurations can execute code. A missing directory is not created
+# (that would leave a mount point in the repository); if the agent creates it,
+# the report says so.
+hidden=(.signing)
+readonly_dirs=(.idea)
+
+# Canonicalize the workspace once; this exact path is used for every mount.
+ws="${WORKSPACE:-$PWD}"
+ws="$(canonical "$ws")" || die "workspace is not a directory: ${WORKSPACE:-$PWD}"
+check_path_chars workspace "$ws"
+require_git_dir "$ws"
+for dir in "${hidden[@]}" "${readonly_dirs[@]}"; do
+    check_protectable_dir "$ws/$dir"
+done
+for dir in "${readonly_dirs[@]}"; do
+    [[ -d "$ws/$dir" ]] && check_no_symlinks "$ws/$dir"
+done
+
+require_rootless
+
+# Every other mount source, canonicalized so symlinks into the workspace are
+# caught. None may overlap the workspace.
+sources=("$root")
+for dir in "$HOME/.agent-run/knowledge" "$HOME/.agent-run/memory" \
+           "$HOME/.agent-run/$name/home"; do
+    src="$(canonical "$dir")" ||
+        die "missing $dir; create it with: mkdir -p ~/.agent-run/{knowledge,memory} ~/.agent-run/$name/home"
+    sources+=("$src")
+done
+for src in "${sources[@]}"; do
+    overlaps "$ws" "$src" && die "workspace $ws overlaps $src, which must stay out of the agent's reach"
+done
+
+mem="$(canonical "$HOME/.agent-run/memory")"
+check_path_chars memory "$mem"
+detect_memory_repo "$mem" "$memory_marker"
+
+# Memory maintenance (quarantine with the other agents paused) and container
+# starts take this lock, so no agent can write to memory, or newly start,
+# while memory is being quarantined.
+lock_dir="$HOME/.agent-run/memory.lock"
+PAUSED=()
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/agent-run.XXXXXX")"
+cleanup() {
+    resume_paused
+    memory_unlock "$lock_dir"
+    rm -rf -- "$tmp"
+}
+trap cleanup EXIT
+tmp="$(canonical "$tmp")"
+mkdir -- "$tmp/empty"
+
+git_guard_init "$ws" "$mem" "$MEM_REPO" "$tmp"
+check_git_config 0 "$ws"
+[[ $MEM_REPO == true ]] && check_git_config 0 "$mem"
+
+protect_mounts=()
+for dir in "${hidden[@]}"; do
+    [[ -d "$ws/$dir" ]] && protect_mounts+=(-v "$tmp/empty:/workspace/$dir:ro,z")
+done
+for dir in "${readonly_dirs[@]}"; do
+    [[ -d "$ws/$dir" ]] && protect_mounts+=(-v "$ws/$dir:/workspace/$dir:ro,z")
+done
+for path in ${MEM_PROTECTED[@]+"${MEM_PROTECTED[@]}"}; do
+    protect_mounts+=(-v "$path:/memory/${path#"$mem"/}:ro,z")
+done
+for path in "$ws" "${sources[@]}"; do
+    overlaps "$tmp" "$path" && die "temporary directory $tmp overlaps $path"
+done
+
+protected=("$ws/.git")
+for dir in "${hidden[@]}" "${readonly_dirs[@]}"; do
+    [[ -d "$ws/$dir" ]] && protected+=("$ws/$dir")
+done
+protected+=(${MEM_PROTECTED[@]+"${MEM_PROTECTED[@]}"})
+# sources: launcher root, knowledge (read-only), memory, the agent's home.
+check_hard_links "$tmp" 3 "$ws" "$mem" "${sources[3]}" "${protected[@]}"
+
+new_container_name "$name"
+cname="$CONTAINER_NAME"
+# Compose runs as a waited-on child (sharing the terminal), so these traps
+# fire immediately and stop the container instead of waiting for it. A signal
+# during the foreground steps before it only runs once they finish, so each
+# step is followed by abort_if_signalled. They are set before anything is
+# paused, so a signal always leads through cleanup, which resumes it.
+signal=0
+trap 'signal=129; stop_container "$cname"' HUP
+trap 'signal=130; stop_container "$cname"' INT
+trap 'signal=143; stop_container "$cname"' TERM
+abort_if_signalled() {
+    [[ $signal -eq 0 ]] || { echo "agent: interrupted before the agent started" >&2; exit "$signal"; }
+}
+
+# quarantine PHASE: quarantines memory with every container that has it
+# mounted paused, so none can swap a folder for a symlink while it runs.
+quarantine="$HOME/.agent-run/quarantine"
+quarantine() {
+    local rc=0
+    pause_memory_users "$mem" "$HOME/.agent-run/memory"
+    quarantine_in_container "localhost/agent-run-$name" "$root" "$1" "$mem" \
+        "$quarantine" "$MEM_REPO" ${MEM_PROTECTED[@]+"${MEM_PROTECTED[@]}"} || rc=$?
+    resume_paused
+    return $rc
+}
+memory_lock "$lock_dir" 600
+abort_if_signalled
+quarantine before || die "could not check memory (is the image built? podman compose build $name)"
+abort_if_signalled
+
+# Launch from the trusted root, so workspace files can't influence Compose.
+# Start the agent's proxy on its own first, so the agent-only options below
+# (--podman-run-args, the extra mounts) never reach it; the agent then runs
+# with --no-deps.
+cd -- "$root"
+compose "$root" "$ws" up -d "proxy-$name" >/dev/null || die "could not start proxy-$name"
+abort_if_signalled
+complete=true
+report_snapshot "$ws" "$tmp" || complete=false
+abort_if_signalled
+compose "$root" "$ws" --podman-run-args "$AGENT_RUN_ARGS" \
+    run --rm --no-deps --name "$cname" \
+    -v "$ws/.git:/workspace/.git:ro,z" \
+    ${protect_mounts[@]+"${protect_mounts[@]}"} \
+    -e GIT_OPTIONAL_LOCKS=0 \
+    "$name" "$@" <&0 &
+child=$!
+# Keep the lock until our container exists, so the next quarantine sees it and
+# pauses it.
+while kill -0 "$child" 2>/dev/null && ! podman container exists "$cname" 2>/dev/null; do
+    sleep 0.25
+done
+memory_unlock "$lock_dir"
+# wait returns early when a trap runs; keep waiting until compose exits. A
+# signal can arrive before Compose has created the container, when the trap's
+# stop finds nothing, so keep stopping it until Compose gives up.
+while :; do
+    status=0
+    wait "$child" || status=$?
+    kill -0 "$child" 2>/dev/null || break
+    while [[ $signal -ne 0 ]] && kill -0 "$child" 2>/dev/null; do
+        stop_container "$cname"
+        sleep 0.5
+    done
+done
+[[ $signal -ne 0 ]] && status=$signal
+
+# Make sure the container is gone before scanning what it wrote.
+podman container exists "$cname" 2>/dev/null && stop_container "$cname"
+if podman container exists "$cname" 2>/dev/null; then
+    printf 'agent: container %s is still present; skipping the change report\n' "$cname" >&2
+    exit "$status"
+fi
+
+memory_lock "$lock_dir" 600
+quarantine after || echo "agent: memory check after the run failed; review $mem by hand" >&2
+memory_unlock "$lock_dir"
+report_print "$ws" "$tmp" "$complete" "$MEM_REPO" "$mem"
+
+exit "$status"

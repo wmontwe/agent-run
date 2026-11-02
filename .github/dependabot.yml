@@ -1,0 +1,14 @@
+# Keeps every pin current: agent CLIs (lockfiles in agents/<agent>/), the base
+# image (Dockerfile) and the proxy image (proxy/Dockerfile). The cooldown waits a
+# week after a release before proposing it, so a compromised release has time
+# to be caught and pulled first.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directories: [/agents/claude, /agents/codex, /agents/gemini, /agents/pi]
+    schedule: {interval: weekly}
+    cooldown: {default-days: 7}
+  - package-ecosystem: docker
+    directories: [/, /proxy]
+    schedule: {interval: weekly}
+    cooldown: {default-days: 7}

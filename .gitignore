@@ -1,0 +1,7 @@
+.idea/
+workspace/*
+!workspace/.gitkeep
+
+# Explicitly add agent files
+!/AGENTS.md
+!/.agents/

@@ -1,0 +1,155 @@
+# Start agents with bin/agent: it mounts the workspace's .git and .idea
+# read-only, hides .signing, keeps /memory to plain notes, gives each
+# container its own /tmp and reports risky changes afterwards. Plain `podman compose run`
+# does none of this.
+#
+# Every agent is isolated from the others: its own image, home
+# (~/.agent-run/<agent>/home), /tmp (bin/agent gives each container its own,
+# removed with it), internal network, proxy and allowlist. Shared:
+# the workspace, ~/.agent-run/knowledge (read-only, curated by you) and
+# ~/.agent-run/memory (writable by every agent).
+
+# Settings shared by every agent service.
+x-agent: &agent
+  userns_mode: "keep-id:uid=1000,gid=1000"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  # Resource limits, so one agent can't starve the VM the others share. Raise
+  # them here if an agent needs more (e.g. for builds).
+  mem_limit: 4g
+  pids_limit: 1024
+  cpus: 4
+  environment:
+    # Versions are pinned at build time (agents/<agent>/package-lock.json);
+    # Claude Code's own updater would bypass the pin.
+    DISABLE_AUTOUPDATER: "1"
+    # "proxy" resolves to the agent's own proxy, the only one on its network.
+    HTTP_PROXY: http://proxy:3128
+    HTTPS_PROXY: http://proxy:3128
+    http_proxy: http://proxy:3128
+    https_proxy: http://proxy:3128
+    NO_PROXY: localhost,127.0.0.1
+    no_proxy: localhost,127.0.0.1
+    NODE_USE_ENV_PROXY: "1"
+
+# The firewall: the only containers with internet access. Each forwards HTTPS
+# to the hosts in its agent's allowlist and refuses everything else.
+x-proxy: &proxy
+  # Squid image pinned in proxy/Dockerfile; one image for every proxy.
+  build: {context: proxy}
+  image: localhost/agent-run-proxy
+  # The proxy is the only container with internet access, so it gets the same
+  # hardening as the agents. Squid runs as an unprivileged user and only
+  # writes pebble's state; its logs go to stdout and it caches nothing.
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: ["/var/lib/pebble/default:size=1m,mode=0700,U"]
+  mem_limit: 256m
+  pids_limit: 64
+  cpus: 1
+
+services:
+  claude:
+    <<: *agent
+    build: {context: ., args: {AGENT: claude}}
+    image: localhost/agent-run-claude
+    command: claude
+    depends_on: [proxy-claude]
+    networks: [claude]
+    volumes:
+      - ${WORKSPACE:-./workspace}:/workspace:z
+      - ${HOME}/.agent-run/knowledge:/knowledge:ro,z
+      - ${HOME}/.agent-run/memory:/memory:z
+      - ${HOME}/.agent-run/claude/home:/home/node:z
+  proxy-claude:
+    <<: *proxy
+    volumes:
+      - ./proxy/squid.conf:/etc/squid/squid.conf:ro,z
+      - ./proxy/allowlists/claude.txt:/etc/squid/allowed-domains.txt:ro,z
+    networks:
+      claude: {aliases: [proxy]}
+      egress: {}
+
+  codex:
+    <<: *agent
+    build: {context: ., args: {AGENT: codex}}
+    image: localhost/agent-run-codex
+    command: codex
+    depends_on: [proxy-codex]
+    networks: [codex]
+    volumes:
+      - ${WORKSPACE:-./workspace}:/workspace:z
+      - ${HOME}/.agent-run/knowledge:/knowledge:ro,z
+      - ${HOME}/.agent-run/memory:/memory:z
+      - ${HOME}/.agent-run/codex/home:/home/node:z
+  proxy-codex:
+    <<: *proxy
+    volumes:
+      - ./proxy/squid.conf:/etc/squid/squid.conf:ro,z
+      - ./proxy/allowlists/codex.txt:/etc/squid/allowed-domains.txt:ro,z
+    networks:
+      codex: {aliases: [proxy]}
+      egress: {}
+
+  gemini:
+    <<: *agent
+    build: {context: ., args: {AGENT: gemini}}
+    image: localhost/agent-run-gemini
+    command: gemini
+    depends_on: [proxy-gemini]
+    networks: [gemini]
+    volumes:
+      - ${WORKSPACE:-./workspace}:/workspace:z
+      - ${HOME}/.agent-run/knowledge:/knowledge:ro,z
+      - ${HOME}/.agent-run/memory:/memory:z
+      - ${HOME}/.agent-run/gemini/home:/home/node:z
+  proxy-gemini:
+    <<: *proxy
+    volumes:
+      - ./proxy/squid.conf:/etc/squid/squid.conf:ro,z
+      - ./proxy/allowlists/gemini.txt:/etc/squid/allowed-domains.txt:ro,z
+    networks:
+      gemini: {aliases: [proxy]}
+      egress: {}
+
+  pi:
+    <<: *agent
+    build: {context: ., args: {AGENT: pi}}
+    image: localhost/agent-run-pi
+    command: pi
+    depends_on: [proxy-pi]
+    networks: [pi]
+    volumes:
+      - ${WORKSPACE:-./workspace}:/workspace:z
+      - ${HOME}/.agent-run/knowledge:/knowledge:ro,z
+      - ${HOME}/.agent-run/memory:/memory:z
+      - ${HOME}/.agent-run/pi/home:/home/node:z
+  proxy-pi:
+    <<: *proxy
+    volumes:
+      - ./proxy/squid.conf:/etc/squid/squid.conf:ro,z
+      - ./proxy/allowlists/pi.txt:/etc/squid/allowed-domains.txt:ro,z
+    networks:
+      pi: {aliases: [proxy]}
+      egress: {}
+
+  # MCP servers: add them as services on one agent's network, so only that
+  # agent can reach them (at http://<service>:<port>) and their traffic goes
+  # through that agent's proxy. Add the hosts they need to its allowlist.
+  #
+  # mcp-example:
+  #   image: <mcp server image>
+  #   environment:
+  #     HTTPS_PROXY: http://proxy:3128
+  #   networks: [claude]
+
+networks:
+  # internal: true means no route out; only the agent's proxy bridges to egress.
+  claude: {internal: true}
+  codex: {internal: true}
+  gemini: {internal: true}
+  pi: {internal: true}
+  egress: {}
+

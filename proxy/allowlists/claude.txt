@@ -1,0 +1,7 @@
+# Hosts the claude agent may reach over HTTPS (port 443). One per line.
+# A leading dot also allows subdomains: .example.com
+# Apply changes: podman compose restart proxy-claude
+api.anthropic.com
+claude.ai
+console.anthropic.com
+platform.claude.com
