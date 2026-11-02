@@ -21,15 +21,24 @@ GIT_COMMAND_KEYS="$GIT_COMMAND_KEYS"'|remote\..*\.(uploadpack|receivepack)|tar\.
 GIT_COMMAND_KEYS="$GIT_COMMAND_KEYS"'|(browser|man)\..*\.(cmd|path)|submodule\..*\.update'
 GIT_GUARD_KEYS="^($GIT_PATH_KEYS|$GIT_COMMAND_KEYS)\$"
 
-# git_guard_init WS MEM MEM_REPO TMP: sets the folders the guard protects and
-# where it keeps its temporary output. Call before the other functions.
+# git_guard_init WS MEM MEM_REPO TMP [WRITABLE...]: sets the folders the guard
+# protects and where it keeps its temporary output. WRITABLE are further
+# agent-writable folders without a .git of their own (engram's .memory). Call
+# before the other functions.
 git_guard_init() {
     GIT_GUARD_WS="$1" GIT_GUARD_MEM="$2" GIT_GUARD_MEM_REPO="$3" GIT_GUARD_TMP="$4"
+    shift 4
+    GIT_GUARD_EXTRA=()
+    [[ $# -eq 0 ]] || GIT_GUARD_EXTRA=("$@")
 }
 
-# True if PATH is inside the workspace or memory, outside their protected .git.
+# True if PATH is inside the workspace, memory or another agent-writable
+# folder, outside the protected .git of the workspace or a memory repository.
 agent_writable() {
     local root
+    for root in ${GIT_GUARD_EXTRA[@]+"${GIT_GUARD_EXTRA[@]}"}; do
+        [[ "$1" == "$root" || "$1" == "$root"/* ]] && return 0
+    done
     for root in "$GIT_GUARD_WS" "$GIT_GUARD_MEM"; do
         if [[ "$1" == "$root/.git" || "$1" == "$root/.git/"* ]]; then
             [[ -d "$root/.git" && ! -L "$root/.git" ]] || return 0

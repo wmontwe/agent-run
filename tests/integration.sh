@@ -152,6 +152,51 @@ check "first agent still writing" yes "$([[ "$(cat "$MEM/a-tick.md")" != "$tick1
 check "memory lock released" no "$([[ -e "$HOME_DIR/.agent-run/memory.lock" ]] && echo yes || echo no)"
 kill -TERM "$a_pid"; wait "$a_pid" 2>/dev/null || true
 
+echo "engram"
+# A context repository next to the workspace, linked the way `engram setup`
+# links a project: the workspace is project "ws" of ../engram-work.
+fresh engram
+E="$S/engram-work"
+mkdir -p "$E/projects/ws/.memory/plans" "$E/projects/ws/.agents/skills" "$E/projects/ws/.claude/skills" \
+    "$E/engram-core/.agents/skills/shared" "$E/engram-core/scripts"
+echo '# context' >"$E/AGENTS.md"
+printf '#!/bin/sh\n' >"$E/engram"
+echo 'echo core script' >"$E/engram-core/scripts/engram-mcp.sh"
+echo '# project ws' >"$E/projects/ws/AGENTS.md"
+echo 'shared skill' >"$E/engram-core/.agents/skills/shared/SKILL.md"
+ln -s ../../../../engram-core/.agents/skills/shared "$E/projects/ws/.agents/skills/shared"
+ln -s ../../.agents/skills/shared "$E/projects/ws/.claude/skills/shared"
+: >"$E/projects/ws/.memory/plans/.gitkeep"
+git init -q "$E"
+for overlay in AGENTS.md .memory .claude .agents; do
+    ln -s "../engram-work/projects/ws/$overlay" "$WS/$overlay"
+done
+run_agent bash -c '
+    cd /workspace
+    echo "agents=$(head -1 AGENTS.md)"
+    echo "skill=$(cat .claude/skills/shared/SKILL.md 2>&1)"
+    if echo x >> AGENTS.md 2>/dev/null; then echo package=writable; else echo package=blocked; fi
+    if echo "project note" > .memory/note.md 2>/dev/null; then echo memory=writable; else echo memory=blocked; fi
+    echo planted > .memory/evil.sh
+    echo "repo_git=$([ -e /engram-work/.git ] && echo visible || echo absent)"
+    echo "core_scripts=$([ -e /engram-work/engram-core/scripts ] && echo visible || echo absent)"
+    echo "entry=$([ -e /engram-work/engram ] && echo visible || echo absent)"' >"$S/out" 2>&1 || true
+check "engram AGENTS.md reached through the link" "# project ws" "$(value agents)"
+check "engram-core skill reached through the links" "shared skill" "$(value skill)"
+check "engram package read-only" blocked "$(value package)"
+check "engram memory writable" writable "$(value memory)"
+check "note saved to the host's engram memory" "project note" "$(cat "$E/projects/ws/.memory/note.md" 2>/dev/null)"
+check "agent-made script quarantined from engram memory" no "$([[ -e "$E/projects/ws/.memory/evil.sh" ]] && echo yes || echo no)"
+check "empty .gitkeep kept" yes "$([[ -e "$E/projects/ws/.memory/plans/.gitkeep" ]] && echo yes || echo no)"
+check "engram repository's .git not mounted" absent "$(value repo_git)"
+check "engram-core scripts not mounted" absent "$(value core_scripts)"
+check "engram entry point not mounted" absent "$(value entry)"
+check "report shows how to save engram memory" yes \
+    "$(grep -q "engram save ws" "$S/out" && echo yes || echo no)"
+AGENT_ENGRAM=0 run_agent bash -c 'echo "optout=$([ -e /engram-work ] && echo mounted || echo absent)"' \
+    >"$S/out" 2>&1 || true
+check "AGENT_ENGRAM=0 leaves engram out" absent "$(value optout)"
+
 echo "refusals"
 fresh refuse
 git -C "$WS" config core.hooksPath .husky

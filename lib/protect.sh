@@ -88,13 +88,21 @@ trust_memory_repo() {
 # folders that follow. Agents can't create such links across mounts (EXDEV),
 # so checking the existing ones before launch is enough. Links to files
 # outside the mounts, like a local clone's Git objects, are fine. PROTECTED
-# paths inside a writable folder are left out of its scan.
+# paths inside a writable folder are left out of its scan, and writable
+# folders inside a protected one (engram's .memory in its read-only package)
+# are left out of the protected scan.
 check_hard_links() {
     local tmp="$1" count="$2" root path shared name
     shift 2
     local writable=("${@:1:$count}")
     shift "$count"
-    find -P "$@" -type f -links +1 -exec stat -f '%d:%i' {} + \
+    local skip=()
+    for root in "${writable[@]}"; do
+        for path in "$@"; do
+            [[ "$root" == "$path"/* ]] && skip+=(-path "$root" -prune -o)
+        done
+    done
+    find -P "$@" ${skip[@]+"${skip[@]}"} -type f -links +1 -exec stat -f '%d:%i' {} + \
         >"$tmp/protected-inodes" || die "could not check protected files for hard links"
     [[ -s "$tmp/protected-inodes" ]] || return 0
     : >"$tmp/writable-inodes"
@@ -108,7 +116,7 @@ check_hard_links() {
     done
     shared="$(sort -u "$tmp/protected-inodes" | comm -12 - <(sort -u "$tmp/writable-inodes") | head -1)"
     [[ -n "$shared" ]] || return 0
-    name="$(find -P "$@" -type f -links +1 -exec stat -f '%d:%i %N' {} + |
+    name="$(find -P "$@" ${skip[@]+"${skip[@]}"} -type f -links +1 -exec stat -f '%d:%i %N' {} + |
         grep -m1 "^$shared " | cut -d' ' -f2-)"
     die "$(printf '%q' "$name") is hard-linked to a file in a writable folder (workspace, memory or the agent's home), so an agent could change or read it there; replace the link with a copy"
 }

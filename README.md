@@ -17,15 +17,19 @@ podman compose build claude                 # replace with codex, gemini or pi
 ```
 
 To make `agent` available in zsh, add this repository's `bin` directory to
-your PATH. Run this **from the agent-run repository**:
+your PATH. If your zsh uses `ZDOTDIR`, its startup file is `$ZDOTDIR/.zshrc`,
+not `~/.zshrc`. Run this **from the agent-run repository**:
 
 ```sh
-printf '\nexport PATH="%s/bin:$PATH"\n' "$PWD" >> ~/.zshrc
-source ~/.zshrc
+printf '\nexport PATH="%s/bin:$PATH"\n' "$PWD" >> "${ZDOTDIR:-$HOME}/.zshrc"
+source "${ZDOTDIR:-$HOME}/.zshrc"
+command -v agent
 ```
 
-Keep this checkout outside any workspace you hand to an agent. Alternatively,
-symlink `bin/agent` into a directory already on your PATH.
+Keep this checkout outside any workspace you hand to an agent. Remove any
+existing `agent()` shell function: functions take precedence over PATH
+executables. Alternatively, symlink `bin/agent` into a directory already on
+your PATH.
 
 ## Run
 
@@ -58,8 +62,8 @@ and committed history. Keep secrets out of workspaces and shared knowledge or
 memory. Review the launcher's post-run report and inspect agent changes on the
 host before running tools or committing them; the report is advisory.
 
-Memory is for notes: only directories and regular `.md`/`.jsonl` files with
-safe, non-hidden names remain there. Other entries are moved to
+Memory is for notes: only directories, regular `.md`/`.jsonl` files with
+safe, non-hidden names, and empty `.gitkeep` files remain there. Other entries are moved to
 `~/.agent-run/quarantine` before and after a run. To version memory, initialize
 it on the host and then explicitly trust its `.git`:
 
@@ -67,6 +71,15 @@ it on the host and then explicitly trust its `.git`:
 git -C ~/.agent-run/memory init
 agent trust-memory
 ```
+
+## Engram
+
+Projects linked to an [engram](https://github.com/wmontwe/engram-core) context
+repository get their context in the container: the project's package is
+read-only, its `.memory` is writable for project notes, and engram-core's
+skills are available. Agents can't save; review the notes and run
+`engram save <project>` on the host, as the post-run report shows. Set
+`AGENT_ENGRAM=0` to run without it.
 
 ## Network and maintenance
 

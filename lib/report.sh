@@ -4,11 +4,11 @@
 # Paths the host may execute or load: file names (glob patterns) and folders,
 # at any depth. Both the find tests and the shell matcher are built from these
 # two lists, so they can't drift apart.
-SENSITIVE_NAMES=(.envrc .env '.env.*' .mcp.json .gitmodules .gitattributes .gitignore
+SENSITIVE_NAMES=(AGENTS.md CLAUDE.md GEMINI.md .envrc .env '.env.*' .mcp.json .gitmodules .gitattributes .gitignore
     git-town.toml .git-town.toml .pre-commit-config.yaml lefthook.yml .lefthook.yml
     lefthook-local.yml .npmrc .yarnrc.yml mise.toml .mise.toml .tool-versions .nvmrc
     Makefile package.json gradlew gradle-wrapper.properties gradle-wrapper.jar mvnw)
-SENSITIVE_DIRS=(.claude .codex .gemini .vscode .idea .signing .husky)
+SENSITIVE_DIRS=(.claude .codex .gemini .agents .junie .air .vscode .idea .signing .husky)
 
 SENSITIVE_TESTS=( \( )
 for _name in "${SENSITIVE_NAMES[@]}"; do
@@ -104,5 +104,16 @@ report_print() {
             printf '  git -C %q status --untracked-files=all --ignored\n' "$mem"
             printf '  git -C %q --no-pager diff --no-ext-diff --no-textconv\n' "$mem"
         fi
+    } >&2
+}
+
+# report_engram ROOT PROJECT: prints, to stderr, how to review and save the
+# project's engram memory on the host.
+report_engram() {
+    {
+        echo "Review engram memory before saving it:"
+        printf '  git -C %q status --untracked-files=all --ignored -- %q\n' "$1" "projects/$2/.memory"
+        printf '  git -C %q --no-pager diff --no-ext-diff --no-textconv -- %q\n' "$1" "projects/$2/.memory"
+        printf '  %q save %q\n' "$1/engram" "$2"
     } >&2
 }

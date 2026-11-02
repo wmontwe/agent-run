@@ -3,7 +3,7 @@
 # global and system configuration, so tests never touch real state.
 
 ROOT="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-for lib in common protect git-guard memory report lock; do
+for lib in common protect git-guard memory report lock engram; do
     # shellcheck source=/dev/null
     . "$ROOT/lib/$lib.sh"
 done

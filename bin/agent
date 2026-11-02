@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Hardened launcher: runs an agent on a Git workspace with .git and .idea
 # mounted read-only and .signing hidden, keeps shared memory to plain notes, and
-# reports changes the host may execute. Supports macOS bash 3.2.
+# reports changes the host may execute. Mounts the project's engram context
+# when its AGENTS.md links into one (AGENT_ENGRAM=0 skips that). Supports
+# macOS bash 3.2.
 #
 # This file is the orchestrator: it holds the configuration and the order of
 # the checks. The checks themselves live in lib/ and are tested in tests/.
@@ -31,7 +33,7 @@ while [[ -L "$entry" ]]; do
     [[ "$entry" == /* ]] || entry="$entry_dir/$entry"
 done
 root="$(cd -P -- "$(dirname -- "$entry")/.." && pwd -P)"
-for lib in common protect git-guard memory report lock podman; do
+for lib in common protect git-guard memory report lock engram podman; do
     [[ -f "$root/lib/$lib.sh" ]] || { echo "agent: $root/lib/$lib.sh not found" >&2; exit 1; }
     # shellcheck source=/dev/null
     . "$root/lib/$lib.sh"
@@ -86,6 +88,21 @@ mem="$(canonical "$HOME/.agent-run/memory")"
 check_path_chars memory "$mem"
 detect_memory_repo "$mem" "$memory_marker"
 
+# The project's engram context, if its AGENTS.md links into one. The whole
+# context repository must stay apart from the workspace and the other mounts.
+ENGRAM=false
+if [[ "${AGENT_ENGRAM:-1}" != 0 ]]; then
+    detect_engram "$ws"
+fi
+if [[ $ENGRAM == true ]]; then
+    for src in "$ws" "${sources[@]}"; do
+        overlaps "$ENGRAM_ROOT" "$src" && die "engram repository $ENGRAM_ROOT overlaps $src"
+    done
+fi
+# Agent-writable folders besides the workspace, memory and the agent's home.
+extra_writable=()
+[[ -n "${ENGRAM_MEMORY:-}" ]] && extra_writable+=("$ENGRAM_MEMORY")
+
 # Memory maintenance (quarantine with the other agents paused) and container
 # starts take this lock, so no agent can write to memory, or newly start,
 # while memory is being quarantined.
@@ -101,9 +118,11 @@ trap cleanup EXIT
 tmp="$(canonical "$tmp")"
 mkdir -- "$tmp/empty"
 
-git_guard_init "$ws" "$mem" "$MEM_REPO" "$tmp"
+git_guard_init "$ws" "$mem" "$MEM_REPO" "$tmp" ${extra_writable[@]+"${extra_writable[@]}"}
 check_git_config 0 "$ws"
 [[ $MEM_REPO == true ]] && check_git_config 0 "$mem"
+# engram save runs Git in the context repository on the host.
+[[ $ENGRAM == true ]] && check_git_config 0 "$ENGRAM_ROOT"
 
 protect_mounts=()
 for dir in "${hidden[@]}"; do
@@ -115,7 +134,17 @@ done
 for path in ${MEM_PROTECTED[@]+"${MEM_PROTECTED[@]}"}; do
     protect_mounts+=(-v "$path:/memory/${path#"$mem"/}:ro,z")
 done
-for path in "$ws" "${sources[@]}"; do
+# The engram package where the workspace's relative links reach it, read-only
+# except its .memory, plus the engram-core skills its skill links point to.
+if [[ $ENGRAM == true ]]; then
+    engram_at="/$ENGRAM_DIR"
+    protect_mounts+=(-v "$ENGRAM_PACKAGE:$engram_at/projects/$ENGRAM_PROJECT:ro,z")
+    [[ -n "$ENGRAM_MEMORY" ]] &&
+        protect_mounts+=(-v "$ENGRAM_MEMORY:$engram_at/projects/$ENGRAM_PROJECT/.memory:z")
+    [[ -n "$ENGRAM_SKILLS" ]] &&
+        protect_mounts+=(-v "$ENGRAM_SKILLS:$engram_at/engram-core/.agents/skills:ro,z")
+fi
+for path in "$ws" "${sources[@]}" ${ENGRAM_ROOT:+"$ENGRAM_ROOT"}; do
     overlaps "$tmp" "$path" && die "temporary directory $tmp overlaps $path"
 done
 
@@ -124,8 +153,13 @@ for dir in "${hidden[@]}" "${readonly_dirs[@]}"; do
     [[ -d "$ws/$dir" ]] && protected+=("$ws/$dir")
 done
 protected+=(${MEM_PROTECTED[@]+"${MEM_PROTECTED[@]}"})
+if [[ $ENGRAM == true ]]; then
+    protected+=("$ENGRAM_PACKAGE")
+    [[ -n "$ENGRAM_SKILLS" ]] && protected+=("$ENGRAM_SKILLS")
+fi
 # sources: launcher root, knowledge (read-only), memory, the agent's home.
-check_hard_links "$tmp" 3 "$ws" "$mem" "${sources[3]}" "${protected[@]}"
+writable=("$ws" "$mem" "${sources[3]}" ${extra_writable[@]+"${extra_writable[@]}"})
+check_hard_links "$tmp" "${#writable[@]}" "${writable[@]}" "${protected[@]}"
 
 new_container_name "$name"
 cname="$CONTAINER_NAME"
@@ -142,14 +176,19 @@ abort_if_signalled() {
     [[ $signal -eq 0 ]] || { echo "agent: interrupted before the agent started" >&2; exit "$signal"; }
 }
 
-# quarantine PHASE: quarantines memory with every container that has it
-# mounted paused, so none can swap a folder for a symlink while it runs.
+# quarantine PHASE: quarantines memory, and the project's engram memory, with
+# every container that has either mounted paused, so none can swap a folder
+# for a symlink while it runs.
 quarantine="$HOME/.agent-run/quarantine"
 quarantine() {
     local rc=0
-    pause_memory_users "$mem" "$HOME/.agent-run/memory"
+    pause_memory_users "$mem" "$HOME/.agent-run/memory" ${extra_writable[@]+"${extra_writable[@]}"}
     quarantine_in_container "localhost/agent-run-$name" "$root" "$1" "$mem" \
         "$quarantine" "$MEM_REPO" ${MEM_PROTECTED[@]+"${MEM_PROTECTED[@]}"} || rc=$?
+    if [[ $rc -eq 0 && -n "${ENGRAM_MEMORY:-}" ]]; then
+        quarantine_in_container "localhost/agent-run-$name" "$root" "$1" "$ENGRAM_MEMORY" \
+            "$quarantine/engram-$ENGRAM_PROJECT" false || rc=$?
+    fi
     resume_paused
     return $rc
 }
@@ -206,5 +245,6 @@ memory_lock "$lock_dir" 600
 quarantine after || echo "agent: memory check after the run failed; review $mem by hand" >&2
 memory_unlock "$lock_dir"
 report_print "$ws" "$tmp" "$complete" "$MEM_REPO" "$mem"
+[[ -n "${ENGRAM_MEMORY:-}" ]] && report_engram "$ENGRAM_ROOT" "$ENGRAM_PROJECT"
 
 exit "$status"

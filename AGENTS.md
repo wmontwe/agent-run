@@ -21,6 +21,7 @@ host to execute later.
 | `lib/git-guard.sh` | The Git config guard (hooks, includes, command settings). |
 | `lib/memory.sh` | Memory quarantine. |
 | `lib/lock.sh` | The memory lock (`memory_lock`, `memory_unlock`). |
+| `lib/engram.sh` | Engram detection and validation (`detect_engram`). |
 | `lib/report.sh` | Snapshot and change report. |
 | `lib/podman.sh` | Rootless check, `compose`, container naming and cleanup; the only library that calls Podman. |
 | `tests/run.sh`, `tests/unit/` | Unit tests for `lib/`, no Podman needed. |
@@ -129,6 +130,31 @@ Host state lives outside the repo, under `~/.agent-run/`:
   - The Git config guard checks both repositories, each against both
     agent-writable folders (`agent_writable`): a workspace config including
     a memory file is as bad as one including a workspace file.
+- **Engram:** when `<ws>/AGENTS.md` is a symlink of exactly the form
+  `../<repo>/projects/<project>/AGENTS.md` (`detect_engram`), the context
+  repository must be valid (`AGENTS.md`, `projects/`, `engram`,
+  `engram-core/`), the package and its `.memory` plain directories, and the
+  repository must not overlap the workspace or any mount source. Then:
+  - the package is mounted read-only at `/<repo>/projects/<project>`, where
+    the workspace's relative overlay links reach it, its `.memory` writable on
+    top, and `engram-core/.agents/skills` read-only (the package's skill links
+    point there). Never the repository's `.git`, `engram` or engram-core's
+    scripts and MCP server; the user saves with `engram save` on the host.
+  - its `.memory` is an extra agent-writable folder: in the Git guard
+    (`git_guard_init … WRITABLE...`, and the repository's own config is
+    checked, since `engram save` runs Git there), the hard-link scan (the
+    package is protected; the writable `.memory` inside it is pruned from the
+    protected scan), the pause, and the quarantine (to
+    `quarantine/engram-<project>`). `engram save` uses `git add -f`, so the
+    quarantine is what keeps non-notes out of its commits.
+  - Empty `.gitkeep` files are allowed in any memory.
+  - Any other `AGENTS.md`, file or link, is a normal project. A link in
+    engram's form that leads nowhere valid is refused, never half-mounted.
+    `/<repo>` may not be a reserved top-level path (`ENGRAM_RESERVED`).
+    `AGENT_ENGRAM=0` skips engram.
+  - The workspace's overlay links stay agent-writable; the report flags a
+    replaced `AGENTS.md`, `CLAUDE.md`, `.claude/`, `.agents/`, `.codex/`,
+    `.junie/`, `.air/` or `.mcp.json`.
 - **Post-run report:**
   - advisory and printed to stderr
   - produced with `find`, not git, so `.gitignore` can't hide anything
@@ -194,6 +220,9 @@ The steps below are what `bin/agent` orchestrates; each check is a function in
   sandbox container, with every other container that has memory mounted
   paused, under the memory lock.
 - The proxy allowlist never matches by reverse DNS (`dstdomain -n`).
+- Engram's repository `.git`, `engram` entry point and engram-core scripts
+  are never mounted; only the project's package (read-only), its `.memory`
+  and engram-core's skills (read-only).
 - Workspace files can't influence the launch. Keep `--env-file /dev/null` and
   the `cd` to the launcher root.
 - The host never runs `git` in an agent-writable repository, and the report
@@ -314,7 +343,9 @@ tests/integration.sh         # against the Podman machine; needs the claude imag
   (a private test proxy); memory as a repository, an unrecorded memory `.git`
   and a read-only folder in quarantine; the hooks and rootful refusals;
   exit-code passthrough; `TERM` before and after the container exists; no
-  leftover containers or volumes. They use scratch repositories and a scratch `HOME`, with
+  leftover containers or volumes; engram (links resolve, package read-only,
+  `.memory` writable and quarantined, `.git` and scripts absent, report,
+  `AGENT_ENGRAM=0`). They use scratch repositories and a scratch `HOME`, with
   `CONTAINER_HOST` and `CONTAINER_SSHKEY` taken from the
   `podman-machine-default` connection.
 - **Check that a new test can fail.** Break the code it covers, run the

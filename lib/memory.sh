@@ -29,6 +29,11 @@ quarantine_memory() {
         done
         [[ $skip == true ]] && continue
         base="${path##*/}" reason=""
+        # Empty .gitkeep placeholders keep folders in Git (engram's .memory has
+        # them); empty files can't carry anything.
+        if [[ "$base" == .gitkeep && -f "$path" && ! -L "$path" && ! -s "$path" ]]; then
+            continue
+        fi
         case "$base" in
             .*|-*) reason="name starts with . or -" ;;
             *[!A-Za-z0-9\ ._-]*) reason="unsupported character in name" ;;
