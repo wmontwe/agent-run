@@ -5,6 +5,13 @@ agent gets an isolated network and an HTTPS destination allowlist. The launcher
 mounts the workspace's `.git` read-only, protects top-level `.idea` and
 `.signing`, checks shared memory, and reports sensitive changes after a run.
 
+> [!NOTE]
+> agent-run is built for personal use: one developer on macOS
+> (Apple Silicon) with Podman, and the projects and tools I work with
+> (Gradle, Android, engram). Defaults and allowlists reflect that setup. It
+> comes without support or guarantees. Review it before relying on it, and
+> adapt it to your own threat model.
+
 ## Set up
 
 Install Podman and podman-compose, and start a **rootless** Podman machine.
@@ -42,10 +49,10 @@ agent claude bash     # run a shell instead of the agent CLI
 ```
 
 The current directory is mounted at the same path in the container, so builds
-and links work the same on both sides; set `WORKSPACE` to use another
+and links work the same on both sides. Set `WORKSPACE` to use another
 directory. Workspaces under container system folders (`/opt`, `/usr`, `/tmp`,
 …) are refused. Sign in inside the container (`BROWSER=echo` prints login
-URLs). Credentials and settings persist in `~/.agent-run/<agent>/home`;
+URLs). Credentials and settings persist in `~/.agent-run/<agent>/home`, so
 protect that folder. The launcher refuses worktrees, rootful Podman, unsafe
 Git configuration and workspaces that overlap its own checkout or other
 mounts. Use `agent`, not `podman compose run`, which bypasses the launcher
@@ -54,9 +61,9 @@ protections.
 | Host path | Container path | Access |
 | --- | --- | --- |
 | Git workspace | Same path | Writable except `.git` and protected folders |
-| `~/.agent-run/<agent>/home` | `/home/node` | Writable; per-agent credentials |
-| `~/.agent-run/knowledge` | `/knowledge` | Read-only; shared by agents |
-| `~/.agent-run/memory` | `/memory` | Writable; shared by agents |
+| `~/.agent-run/<agent>/home` | `/home/node` | Writable, per-agent credentials |
+| `~/.agent-run/knowledge` | `/knowledge` | Read-only, shared by agents |
+| `~/.agent-run/memory` | `/memory` | Writable, shared by agents |
 
 Agents can't reach your clipboard. To copy their output, select with your
 terminal: hold Shift while selecting (Option in Terminal.app and iTerm2).
@@ -67,7 +74,7 @@ are hidden. Agents can
 read everything else in the workspace, including secrets outside `.signing`
 and committed history. Keep secrets out of workspaces and shared knowledge or
 memory. Review the launcher's post-run report and inspect agent changes on the
-host before running tools or committing them; the report is advisory.
+host before running tools or committing them. The report is advisory.
 
 Memory is for notes: only directories, regular `.md`/`.jsonl` files with
 safe, non-hidden names, and empty `.gitkeep` files remain there. Other entries are moved to
@@ -82,7 +89,7 @@ agent trust-memory
 ## Builds
 
 Agents can build Gradle and Android projects. A project's tools come from its
-`mise.toml`, which needs a `mise.lock` covering Linux; create it on the host:
+`mise.toml`, which needs a `mise.lock` covering Linux. Create it on the host:
 
 ```sh
 mise lock --platform linux-arm64,macos-arm64
@@ -107,7 +114,7 @@ Projects linked to an [engram](https://github.com/wmontwe/engram-core) context
 repository get their context in the container: the project's package is
 read-only, its `.memory` is writable for project notes, and engram-core's
 skills are available. If the project commits its own `AGENTS.md`, agents see
-engram's instead. Agents can't save; review the notes and run
+engram's instead. Agents can't save. Review the notes and run
 `engram save <project>` on the host, as the post-run report shows. Set
 `AGENT_ENGRAM=0` to run without it.
 
@@ -121,8 +128,8 @@ podman compose restart proxy-claude
 podman compose logs -f proxy-claude | grep DENIED
 ```
 
-Only HTTPS to allowed hosts on port 443 is available; allowed hosts can still
-receive anything the agent sends them. To rebuild after updating this checkout
+Only HTTPS to allowed hosts on port 443 is available, and allowed hosts can
+still receive anything the agent sends them. To rebuild after updating this checkout
 or its pinned dependencies, run `podman compose build <agent>`. To stop proxies,
 run `podman compose down` from this repository.
 
