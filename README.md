@@ -103,7 +103,8 @@ Build hosts every agent may reach are listed in `proxy/allowlists/build.txt`.
 Projects linked to an [engram](https://github.com/wmontwe/engram-core) context
 repository get their context in the container: the project's package is
 read-only, its `.memory` is writable for project notes, and engram-core's
-skills are available. Agents can't save; review the notes and run
+skills are available. If the project commits its own `AGENTS.md`, agents see
+engram's instead. Agents can't save; review the notes and run
 `engram save <project>` on the host, as the post-run report shows. Set
 `AGENT_ENGRAM=0` to run without it.
 

@@ -1,7 +1,8 @@
 # Engram integration. An engram context repository (e.g. engram-work) keeps a
-# project's agent context outside the project: the project's AGENTS.md is a
-# relative link `../<repo>/projects/<project>/AGENTS.md`, and so are its other
-# overlays (.memory, .claude, .agents, ...). Mounting the package at the path
+# project's agent context outside the project: the project's top-level
+# AGENTS.md, CLAUDE.md, .memory, .claude, .agents, ... are relative links
+# `../<repo>/projects/<project>/<name>`. A project that commits its own
+# AGENTS.md has links for the rest only. Mounting the package at the path
 # those links reach from /workspace, `/<repo>/projects/<project>`, makes them
 # work unchanged in the container. The package is read-only except its
 # .memory; the package's skills link into `<repo>/engram-core/.agents/skills`,
@@ -11,35 +12,45 @@
 # Top-level container paths an engram repository may not be mounted over.
 ENGRAM_RESERVED=" bin boot dev etc home lib lib32 lib64 libx32 media mnt opt proc root run sbin srv sys tmp usr var workspace memory knowledge "
 
-# detect_engram WS: if WS/AGENTS.md is engram's link, validates the context
-# repository and sets ENGRAM=true, ENGRAM_ROOT (canonical repository),
-# ENGRAM_DIR (its container path below /), ENGRAM_PROJECT, ENGRAM_PACKAGE
-# (canonical package) and, when they exist, ENGRAM_MEMORY (the package's
-# .memory) and ENGRAM_SKILLS (engram-core's skills). Any other AGENTS.md,
-# file or link, sets ENGRAM=false. A link in engram's form that doesn't lead
-# to a valid context repository is refused rather than half-mounted.
+# detect_engram WS: if any top-level entry of WS is engram's link (named like
+# its target), validates the context repository and sets ENGRAM=true,
+# ENGRAM_ROOT (canonical repository), ENGRAM_DIR (its container path below /),
+# ENGRAM_PROJECT, ENGRAM_PACKAGE (canonical package) and, when they exist,
+# ENGRAM_MEMORY (the package's .memory) and ENGRAM_SKILLS (engram-core's
+# skills). Without such a link it sets ENGRAM=false. Links in engram's form
+# that disagree on repository or project, or that don't lead to a valid
+# context repository, are refused rather than half-mounted.
 detect_engram() {
-    local ws="$1" link dir project rest candidate
+    local ws="$1" entry name link dir="" project="" first="" d p rest candidate
     ENGRAM=false ENGRAM_ROOT="" ENGRAM_DIR="" ENGRAM_PROJECT=""
     ENGRAM_PACKAGE="" ENGRAM_MEMORY="" ENGRAM_SKILLS=""
-    [[ -L "$ws/AGENTS.md" ]] || return 0
-    link="$(readlink -- "$ws/AGENTS.md")"
-    [[ "$link" == ../*/projects/*/AGENTS.md ]] || return 0
-    rest="${link#../}"
-    dir="${rest%%/*}"
-    rest="${rest#"$dir"/projects/}"
-    project="${rest%/AGENTS.md}"
-    for candidate in "$dir" "$project"; do
-        case "$candidate" in
-            "" | . | .. | *[!A-Za-z0-9._-]*)
-                die "$ws/AGENTS.md links to $link, which looks like engram's but isn't a form agent-run supports" ;;
-        esac
+    for entry in "$ws"/* "$ws"/.*; do
+        [[ -L "$entry" ]] || continue
+        name="${entry##*/}"
+        link="$(readlink -- "$entry")"
+        [[ "$link" == ../*/projects/*/"$name" ]] || continue
+        rest="${link#../}"
+        d="${rest%%/*}"
+        rest="${rest#"$d"/projects/}"
+        p="${rest%/"$name"}"
+        for candidate in "$d" "$p"; do
+            case "$candidate" in
+                "" | . | .. | *[!A-Za-z0-9._-]*)
+                    die "$entry links to $link, which looks like engram's but isn't a form agent-run supports" ;;
+            esac
+        done
+        if [[ -z "$first" ]]; then
+            first="$entry" dir="$d" project="$p"
+        elif [[ "$d/$p" != "$dir/$project" ]]; then
+            die "$first and $entry link into different engram projects ($dir/$project, $d/$p)"
+        fi
     done
+    [[ -n "$first" ]] || return 0
     [[ "$ENGRAM_RESERVED" != *" $dir "* ]] ||
-        die "$ws/AGENTS.md links into ../$dir, which can't be mounted at /$dir in the container"
+        die "$first links into ../$dir, which can't be mounted at /$dir in the container"
 
     ENGRAM_ROOT="$(canonical "${ws%/*}/$dir")" ||
-        die "$ws/AGENTS.md links to $link, but ${ws%/*}/$dir doesn't exist"
+        die "$first links into ../$dir, but ${ws%/*}/$dir doesn't exist"
     check_path_chars engram "$ENGRAM_ROOT"
     [[ -f "$ENGRAM_ROOT/AGENTS.md" && -d "$ENGRAM_ROOT/projects" &&
         -f "$ENGRAM_ROOT/engram" && -d "$ENGRAM_ROOT/engram-core" ]] ||

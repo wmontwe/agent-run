@@ -37,6 +37,29 @@ test_engram_detected() {
     assert_eq "$T/engram-work/engram-core/.agents/skills" "$ENGRAM_SKILLS"
 }
 
+# A project that commits its own AGENTS.md: engram links the other files.
+test_engram_detected_without_agents_link() {
+    setup_engram
+    rm p/AGENTS.md
+    echo '# own' >p/AGENTS.md
+    echo '# claude' >engram-work/projects/p/CLAUDE.md
+    ln -s ../engram-work/projects/p/CLAUDE.md p/CLAUDE.md
+    ln -s app/src p/source
+    detect_engram "$T/p"
+    assert_eq true "$ENGRAM"
+    assert_eq p "$ENGRAM_PROJECT"
+    assert_eq "$T/engram-work/projects/p/.memory" "$ENGRAM_MEMORY"
+}
+
+test_links_into_different_projects_refused() {
+    setup_engram
+    mkdir -p engram-work/projects/q
+    echo '# q' >engram-work/projects/q/AGENTS.md
+    echo '# q' >engram-work/projects/q/CLAUDE.md
+    ln -s ../engram-work/projects/q/CLAUDE.md p/CLAUDE.md
+    assert_dies "link into different engram projects" detect_engram "$T/p"
+}
+
 test_other_context_repo_name() {
     setup_engram engram-personal
     detect_engram "$T/p"
@@ -54,6 +77,7 @@ test_missing_memory_and_skills_optional() {
 
 test_refusals() {
     setup_engram
+    rm p/.memory
     ln -sfn ../etc/projects/p/AGENTS.md p/AGENTS.md
     assert_dies "can't be mounted at /etc" detect_engram "$T/p"
     ln -sfn '../engram-work/projects/a b/AGENTS.md' p/AGENTS.md

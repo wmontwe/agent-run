@@ -144,6 +144,9 @@ if [[ $ENGRAM == true ]]; then
         protect_mounts+=(-v "$ENGRAM_MEMORY:$engram_at/projects/$ENGRAM_PROJECT/.memory:z")
     [[ -n "$ENGRAM_SKILLS" ]] &&
         protect_mounts+=(-v "$ENGRAM_SKILLS:$engram_at/engram-core/.agents/skills:ro,z")
+    # A project that commits its own AGENTS.md gets engram's in the container.
+    [[ -f "$ws/AGENTS.md" && ! -L "$ws/AGENTS.md" ]] &&
+        protect_mounts+=(-v "$ENGRAM_PACKAGE/AGENTS.md:/workspace/AGENTS.md:ro,z")
 fi
 for path in "$ws" "${sources[@]}" ${ENGRAM_ROOT:+"$ENGRAM_ROOT"}; do
     overlaps "$tmp" "$path" && die "temporary directory $tmp overlaps $path"

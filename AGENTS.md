@@ -65,13 +65,15 @@ Host state is under `~/.agent-run/`: `knowledge/` (read-only `/knowledge`),
   its `.git` (and an existing `.gitignore`/`.gitattributes`) is mounted
   read-only, but only when it matches the record written by
   `agent trust-memory`, since an agent can create a `.git` itself.
-- **Engram:** a workspace `AGENTS.md` symlink of exactly the form
-  `../<repo>/projects/<project>/AGENTS.md` mounts that project's package
-  read-only at the same relative path, its `.memory` writable (treated like
-  memory: guard, hard links, pause, quarantine), and engram-core's skills
-  read-only. The repository's `.git`, `engram` and engram-core scripts are
-  never mounted. A link of that form that doesn't validate is refused.
-  `AGENT_ENGRAM=0` turns it off.
+- **Engram:** top-level workspace links of exactly the form
+  `../<repo>/projects/<project>/<name>` (named like their target, all into
+  one project) mount that project's package read-only at the same relative
+  path, its `.memory` writable (treated like memory: guard, hard links,
+  pause, quarantine), and engram-core's skills read-only. A project's own
+  `AGENTS.md` file is covered read-only by the package's. The repository's
+  `.git`, `engram` and engram-core scripts are never mounted. Links of that
+  form that disagree or don't validate are refused. `AGENT_ENGRAM=0` turns it
+  off.
 - **Build tools:** the project configures its runtimes and build (mise,
   Gradle, Kotlin, JVM settings); agent-run only provides them. Before the
   agent starts, an install container (agent image, read-only, no

@@ -196,6 +196,21 @@ check "report shows how to save engram memory" yes \
 AGENT_ENGRAM=0 run_agent bash -c 'echo "optout=$([ -e /engram-work ] && echo mounted || echo absent)"' \
     >"$S/out" 2>&1 || true
 check "AGENT_ENGRAM=0 leaves engram out" absent "$(value optout)"
+# A project that commits its own AGENTS.md: engram links only the rest.
+rm "$WS/AGENTS.md"
+echo '# own' >"$WS/AGENTS.md"
+echo '# claude ws' >"$E/projects/ws/CLAUDE.md"
+ln -s ../engram-work/projects/ws/CLAUDE.md "$WS/CLAUDE.md"
+run_agent bash -c '
+    cd /workspace
+    echo "claude=$(head -1 CLAUDE.md 2>&1)"
+    echo "agents=$(head -1 AGENTS.md)"
+    if echo x >> AGENTS.md 2>/dev/null; then echo overlay=writable; else echo overlay=blocked; fi' \
+    >"$S/out" 2>&1 || true
+check "engram found without an AGENTS.md link" "# claude ws" "$(value claude)"
+check "engram's AGENTS.md replaces the project's" "# project ws" "$(value agents)"
+check "replaced AGENTS.md read-only" blocked "$(value overlay)"
+check "project's own AGENTS.md unchanged" "# own" "$(cat "$WS/AGENTS.md")"
 
 echo "build tools"
 # A project with locked mise tools and a Gradle wrapper. Uses the agent's real
