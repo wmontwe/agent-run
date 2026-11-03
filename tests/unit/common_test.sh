@@ -66,3 +66,20 @@ test_resolve_path_symlink_loop_fails() {
     assert_dies "" resolve_path "$T/loop" /
     assert_dies "" resolve_path "$T/one/x" /
 }
+
+test_git_excludes_file_from_config() {
+    echo '*.log' >ignores
+    printf '[core]\n\texcludesFile = %s\n' "$T/ignores" >gitconfig
+    assert_eq "$T/ignores" "$(GIT_CONFIG_GLOBAL="$T/gitconfig" git_excludes_file)"
+}
+
+test_git_excludes_file_default_location() {
+    mkdir -p "$HOME/.config/git"
+    echo '*.log' >"$HOME/.config/git/ignore"
+    assert_eq "$HOME/.config/git/ignore" "$(XDG_CONFIG_HOME= git_excludes_file)"
+}
+
+test_git_excludes_file_missing() {
+    printf '[core]\n\texcludesFile = %s\n' "$T/nowhere" >gitconfig
+    assert_eq "" "$(GIT_CONFIG_GLOBAL="$T/gitconfig" git_excludes_file)"
+}

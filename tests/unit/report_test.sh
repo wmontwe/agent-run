@@ -97,8 +97,9 @@ test_new_sensitive_names_reported() {
     echo url >ws/app/gradle/wrapper/gradle-wrapper.properties
     echo X=1 >ws/.env.local
     echo all: >ws/Makefile
+    echo "# lock" >ws/mise.lock
     out="$(report)"
-    for path in .husky/pre-commit .npmrc app/gradle/wrapper/gradle-wrapper.properties .env.local Makefile; do
+    for path in .husky/pre-commit .npmrc app/gradle/wrapper/gradle-wrapper.properties .env.local Makefile mise.lock; do
         assert_contains "  $path" "$out"
     done
     assert_contains "Other changed files: 0" "$out"

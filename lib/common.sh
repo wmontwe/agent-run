@@ -67,3 +67,14 @@ resolve_path() {
         return 0
     done
 }
+
+# git_excludes_file: prints the global ignore file host Git uses
+# (core.excludesFile, else Git's default location), or nothing if there is
+# none.
+git_excludes_file() {
+    local file
+    file="$(git config --global --path --get core.excludesFile 2>/dev/null)" ||
+        file="${XDG_CONFIG_HOME:-$HOME/.config}/git/ignore"
+    [[ -f "$file" ]] || return 0
+    printf '%s\n' "$file"
+}

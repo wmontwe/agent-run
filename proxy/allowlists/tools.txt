@@ -1,0 +1,13 @@
+# Hosts only bin/agent's tool install container may reach (proxy-tools): mise
+# downloads (GitHub releases, the mise Java catalog) and Gradle distributions
+# (services.gradle.org redirects to GitHub releases) with their checksums
+# (downloads.gradle.org).
+# Agents never get these; GitHub would let them push to an attacker's repo.
+# Apply changes: podman compose restart proxy-tools
+github.com
+release-assets.githubusercontent.com
+objects.githubusercontent.com
+mise-java.jdx.dev
+mise-versions.jdx.dev
+services.gradle.org
+downloads.gradle.org

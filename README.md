@@ -56,6 +56,10 @@ protections.
 | `~/.agent-run/knowledge` | `/knowledge` | Read-only; shared by agents |
 | `~/.agent-run/memory` | `/memory` | Writable; shared by agents |
 
+Agents can't reach your clipboard. To copy their output, select with your
+terminal: hold Shift while selecting (Option in Terminal.app and iTerm2).
+
+Git in the container uses a read-only copy of your global gitignore.
 Existing top-level `.idea` is read-only and `.signing` is hidden. Agents can
 read everything else in the workspace, including secrets outside `.signing`
 and committed history. Keep secrets out of workspaces and shared knowledge or
@@ -71,6 +75,28 @@ it on the host and then explicitly trust its `.git`:
 git -C ~/.agent-run/memory init
 agent trust-memory
 ```
+
+## Builds
+
+Agents can build Gradle and Android projects. A project's tools come from its
+`mise.toml`, which needs a `mise.lock` covering Linux; create it on the host:
+
+```sh
+mise lock --platform linux-arm64,macos-arm64
+```
+
+Tools, the Gradle cache and the Android SDK are kept per agent in Podman
+volumes, so only the first build downloads them. Android SDK licenses are
+taken from `~/Library/Android/sdk/licenses` (or `$ANDROID_HOME`). Large builds
+need more memory than the default 4 GB per agent (the launcher prints the
+limit at start), and a Podman machine to match:
+
+```sh
+podman machine set --memory 24576   # with the machine stopped
+AGENT_MEMORY=12g agent claude
+```
+
+Build hosts every agent may reach are listed in `proxy/allowlists/build.txt`.
 
 ## Engram
 

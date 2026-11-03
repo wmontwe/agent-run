@@ -1,0 +1,15 @@
+# Hosts every agent may reach to build projects: Gradle distributions and
+# plugins, Maven and Google repositories. Loaded by every agent proxy next to
+# its own allowlist. Keep it to download hosts projects actually need.
+# Apply changes: podman compose restart proxy-<agent>
+services.gradle.org
+downloads.gradle.org
+plugins.gradle.org
+plugins-artifacts.gradle.org
+repo.maven.apache.org
+repo1.maven.org
+dl.google.com
+maven.google.com
+maven.mozilla.org
+jitpack.io
+central.sonatype.com

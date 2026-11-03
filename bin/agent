@@ -33,7 +33,7 @@ while [[ -L "$entry" ]]; do
     [[ "$entry" == /* ]] || entry="$entry_dir/$entry"
 done
 root="$(cd -P -- "$(dirname -- "$entry")/.." && pwd -P)"
-for lib in common protect git-guard memory report lock engram podman; do
+for lib in common protect git-guard memory report lock engram tools podman; do
     [[ -f "$root/lib/$lib.sh" ]] || { echo "agent: $root/lib/$lib.sh not found" >&2; exit 1; }
     # shellcheck source=/dev/null
     . "$root/lib/$lib.sh"
@@ -112,6 +112,7 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/agent-run.XXXXXX")"
 cleanup() {
     resume_paused
     memory_unlock "$lock_dir"
+    [[ -z "${tools_lock:-}" ]] || memory_unlock "$tools_lock"
     rm -rf -- "$tmp"
 }
 trap cleanup EXIT
@@ -147,6 +148,16 @@ fi
 for path in "$ws" "${sources[@]}" ${ENGRAM_ROOT:+"$ENGRAM_ROOT"}; do
     overlaps "$tmp" "$path" && die "temporary directory $tmp overlaps $path"
 done
+# The user's global gitignore, so Git in the container ignores what it does on
+# the host. A copy, so no host path is mounted.
+git_env=()
+excludes="$(git_excludes_file)"
+if [[ -n "$excludes" ]]; then
+    cp -- "$excludes" "$tmp/gitignore"
+    protect_mounts+=(-v "$tmp/gitignore:/etc/agent-run/gitignore:ro,z")
+    git_env=(-e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=core.excludesFile
+        -e GIT_CONFIG_VALUE_0=/etc/agent-run/gitignore)
+fi
 
 protected=("$ws/.git")
 for dir in "${hidden[@]}" "${readonly_dirs[@]}"; do
@@ -192,6 +203,31 @@ quarantine() {
     resume_paused
     return $rc
 }
+# Install the project's locked tools (mise), its Gradle distribution and the
+# Android SDK licenses into this agent's volumes, in their own container. Before
+# the memory lock, since a first install can take a while; with a per-agent
+# lock, since two runs of one agent share the volumes.
+cd -- "$root"
+copy_tool_config "$ws" "$tmp/tools"
+if [[ $TOOL_CONFIG == unlocked ]]; then
+    echo "agent: $ws has a mise config but no mise.lock, so its tools are not installed; on the host run: mise lock --platform linux-arm64,macos-arm64" >&2
+    rm -f -- "$tmp/tools/mise.toml" "$tmp/tools/.mise.toml" "$tmp/tools/mise.lock"
+fi
+licenses=""
+if [[ -d "${ANDROID_HOME:-$HOME/Library/Android/sdk}/licenses" ]]; then
+    licenses="$(canonical "${ANDROID_HOME:-$HOME/Library/Android/sdk}/licenses")"
+    check_path_chars "Android licenses" "$licenses"
+fi
+compose "$root" "$ws" up -d proxy-tools >/dev/null || die "could not start proxy-tools"
+tools_lock="$HOME/.agent-run/tools-$name.lock"
+memory_lock "$tools_lock" 1800
+abort_if_signalled
+install_tools "localhost/agent-run-$name" "$name" "$tmp/tools" "$licenses" ||
+    die "could not install the project's tools (see above)"
+memory_unlock "$tools_lock"
+tool_mounts "$name"
+abort_if_signalled
+
 memory_lock "$lock_dir" 600
 abort_if_signalled
 quarantine before || die "could not check memory (is the image built? podman compose build $name)"
@@ -203,15 +239,18 @@ abort_if_signalled
 # with --no-deps.
 cd -- "$root"
 compose "$root" "$ws" up -d "proxy-$name" >/dev/null || die "could not start proxy-$name"
+# compose.yaml's mem_limit; set here so the launch line shows the real value.
+export AGENT_MEMORY="${AGENT_MEMORY:-4g}"
+echo "agent: starting $name with a memory limit of $AGENT_MEMORY (AGENT_MEMORY)" >&2
 abort_if_signalled
 complete=true
 report_snapshot "$ws" "$tmp" || complete=false
 abort_if_signalled
-compose "$root" "$ws" --podman-run-args "$AGENT_RUN_ARGS" \
+compose "$root" "$ws" --podman-run-args "$AGENT_RUN_ARGS $TOOL_MOUNTS" \
     run --rm --no-deps --name "$cname" \
     -v "$ws/.git:/workspace/.git:ro,z" \
     ${protect_mounts[@]+"${protect_mounts[@]}"} \
-    -e GIT_OPTIONAL_LOCKS=0 \
+    -e GIT_OPTIONAL_LOCKS=0 ${git_env[@]+"${git_env[@]}"} \
     "$name" "$@" <&0 &
 child=$!
 # Keep the lock until our container exists, so the next quarantine sees it and

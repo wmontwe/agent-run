@@ -6,7 +6,7 @@
 # two lists, so they can't drift apart.
 SENSITIVE_NAMES=(AGENTS.md CLAUDE.md GEMINI.md .envrc .env '.env.*' .mcp.json .gitmodules .gitattributes .gitignore
     git-town.toml .git-town.toml .pre-commit-config.yaml lefthook.yml .lefthook.yml
-    lefthook-local.yml .npmrc .yarnrc.yml mise.toml .mise.toml .tool-versions .nvmrc
+    lefthook-local.yml .npmrc .yarnrc.yml mise.toml .mise.toml mise.lock .tool-versions .nvmrc
     Makefile package.json gradlew gradle-wrapper.properties gradle-wrapper.jar mvnw)
 SENSITIVE_DIRS=(.claude .codex .gemini .agents .junie .air .vscode .idea .signing .husky)
 

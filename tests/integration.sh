@@ -197,6 +197,69 @@ AGENT_ENGRAM=0 run_agent bash -c 'echo "optout=$([ -e /engram-work ] && echo mou
     >"$S/out" 2>&1 || true
 check "AGENT_ENGRAM=0 leaves engram out" absent "$(value optout)"
 
+echo "build tools"
+# A project with locked mise tools and a Gradle wrapper. Uses the agent's real
+# tool volumes (agent-run-claude-*), which are caches; Temurin 21 downloads
+# once.
+fresh tools
+printf '[tools]\njava = "temurin-21"\n' >"$WS/mise.toml"
+( cd "$WS" && mise lock --platform linux-arm64,linux-x64,macos-arm64 >/dev/null 2>&1 ) ||
+    echo "  (mise lock failed on the host; the next checks will fail)"
+AGENT_MEMORY=6g run_agent bash -c '
+    cd /workspace
+    echo "java=$(java -version 2>&1 | grep " version " | cut -d\" -f2 | cut -d. -f1)"
+    echo "java_path=$(mise which java)"
+    if touch /mise/x 2>/dev/null; then echo mise=writable; else echo mise=read-only; fi
+    echo "gradle_properties=$([ -e ~/.gradle/gradle.properties ] && echo written || echo none)"
+    printf "%s\n" "public class Get { public static void main(String[] a) {" \
+        "try { var c = (java.net.HttpURLConnection) new java.net.URI(a[0]).toURL().openConnection();" \
+        "System.out.println(c.getResponseCode()); } catch (Exception e) { System.out.println(0); } } }" >/tmp/Get.java
+    echo "java_maven=$(java /tmp/Get.java https://repo1.maven.org/maven2/ 2>/dev/null)"
+    echo "java_github=$(java /tmp/Get.java https://github.com/ 2>/dev/null)"
+    echo "github=$(curl -s -o /dev/null -m8 -w "%{http_code}" https://github.com/)"
+    echo "maven=$(curl -s -o /dev/null -m8 -w "%{http_code}" https://repo1.maven.org/maven2/)"
+    echo "memory=$(cat /sys/fs/cgroup/memory.max)"' >"$S/out" 2>&1 || true
+check "locked mise tools on PATH" 21 "$(value java)"
+check "tools come from the tool volume" yes "$([[ "$(value java_path)" == /mise/installs/java/* ]] && echo yes || echo no)"
+check "tool volume read-only" read-only "$(value mise)"
+check "Gradle settings left to the project" none "$(value gradle_properties)"
+check "every JVM uses the proxy (JAVA_TOOL_OPTIONS)" 200 "$(value java_maven)"
+check "JVMs can't reach GitHub" 0 "$(value java_github)"
+check "agent can't reach GitHub" 000 "$(value github)"
+check "agent reaches Maven Central (build allowlist)" 200 "$(value maven)"
+check "AGENT_MEMORY sets the memory limit" 6442450944 "$(value memory)"
+check "memory limit printed at start" yes \
+    "$(grep -q "memory limit of 6g" "$S/out" && echo yes || echo no)"
+rm "$WS/mise.lock"
+run_agent true >"$S/out" 2>&1 || true
+check "mise config without mise.lock warned about" yes \
+    "$(grep -q "no mise.lock" "$S/out" && echo yes || echo no)"
+check "invalid AGENT_MEMORY refused" yes \
+    "$(AGENT_MEMORY=lots run_agent true >/dev/null 2>&1 && echo no || echo yes)"
+# A wrapper jar that isn't Gradle's never runs. (The download itself needs a
+# real wrapper jar, which Gradle doesn't publish on its own.)
+( cd "$WS" && mise lock --platform linux-arm64,linux-x64,macos-arm64 >/dev/null 2>&1 ) || true
+mkdir -p "$WS/gradle/wrapper"
+printf '%s\n' 'distributionUrl=https\://services.gradle.org/distributions/gradle-9.7.0-bin.zip' \
+    'distributionSha256Sum=0000' >"$WS/gradle/wrapper/gradle-wrapper.properties"
+echo 'not a jar' >"$WS/gradle/wrapper/gradle-wrapper.jar"
+run_agent true >"$S/out" 2>&1 || true
+check "unverified wrapper jar not run" yes \
+    "$(grep -q "does not match Gradle's checksum for 9.7.0" "$S/out" && echo yes || echo no)"
+
+echo "global gitignore"
+fresh gitignore
+mkdir -p "$HOME_DIR/.config/git"
+echo 'ignored-by-user.txt' >"$HOME_DIR/.config/git/ignore"
+run_agent bash -c '
+    cd /workspace
+    touch ignored-by-user.txt other.txt
+    echo "ignored=$(git status --porcelain --untracked-files=all | tr "\n" " ")"
+    echo "writable=$(echo x 2>/dev/null >/etc/agent-run/gitignore && echo yes || echo no)"' \
+    >"$S/out" 2>&1 || true
+check "host global gitignore applies" "?? other.txt " "$(value ignored)"
+check "global gitignore read-only" no "$(value writable)"
+
 echo "refusals"
 fresh refuse
 git -C "$WS" config core.hooksPath .husky

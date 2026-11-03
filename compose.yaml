@@ -9,15 +9,19 @@
 # the workspace, ~/.agent-run/knowledge (read-only, curated by you) and
 # ~/.agent-run/memory (writable by every agent).
 
+# A fixed project name keeps network and volume names (agent-run_tools, ...)
+# independent of this checkout's folder name; bin/agent relies on them.
+name: agent-run
+
 # Settings shared by every agent service.
 x-agent: &agent
   userns_mode: "keep-id:uid=1000,gid=1000"
   read_only: true
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
-  # Resource limits, so one agent can't starve the VM the others share. Raise
-  # them here if an agent needs more (e.g. for builds).
-  mem_limit: 4g
+  # Resource limits, so one agent can't starve the VM the others share.
+  # AGENT_MEMORY raises the memory limit, e.g. for Gradle builds.
+  mem_limit: ${AGENT_MEMORY:-4g}
   pids_limit: 1024
   cpus: 4
   environment:
@@ -32,9 +36,14 @@ x-agent: &agent
     NO_PROXY: localhost,127.0.0.1
     no_proxy: localhost,127.0.0.1
     NODE_USE_ENV_PROXY: "1"
+    # Java ignores the variables above; every JVM reads this one, Gradle's
+    # daemons and test workers included. Same as JAVA_PROXY_OPTIONS in
+    # lib/tools.sh.
+    JAVA_TOOL_OPTIONS: -Dhttp.proxyHost=proxy -Dhttp.proxyPort=3128 -Dhttps.proxyHost=proxy -Dhttps.proxyPort=3128 -Dhttp.nonProxyHosts=localhost|127.0.0.1
 
 # The firewall: the only containers with internet access. Each forwards HTTPS
-# to the hosts in its agent's allowlist and refuses everything else.
+# to the hosts in its agent's allowlist, plus the shared build allowlist
+# (proxy/allowlists/build.txt), and refuses everything else.
 x-proxy: &proxy
   # Squid image pinned in proxy/Dockerfile; one image for every proxy.
   build: {context: proxy}
@@ -68,6 +77,7 @@ services:
     volumes:
       - ./proxy/squid.conf:/etc/squid/squid.conf:ro,z
       - ./proxy/allowlists/claude.txt:/etc/squid/allowed-domains.txt:ro,z
+      - ./proxy/allowlists/build.txt:/etc/squid/build-domains.txt:ro,z
     networks:
       claude: {aliases: [proxy]}
       egress: {}
@@ -89,6 +99,7 @@ services:
     volumes:
       - ./proxy/squid.conf:/etc/squid/squid.conf:ro,z
       - ./proxy/allowlists/codex.txt:/etc/squid/allowed-domains.txt:ro,z
+      - ./proxy/allowlists/build.txt:/etc/squid/build-domains.txt:ro,z
     networks:
       codex: {aliases: [proxy]}
       egress: {}
@@ -110,6 +121,7 @@ services:
     volumes:
       - ./proxy/squid.conf:/etc/squid/squid.conf:ro,z
       - ./proxy/allowlists/gemini.txt:/etc/squid/allowed-domains.txt:ro,z
+      - ./proxy/allowlists/build.txt:/etc/squid/build-domains.txt:ro,z
     networks:
       gemini: {aliases: [proxy]}
       egress: {}
@@ -131,8 +143,21 @@ services:
     volumes:
       - ./proxy/squid.conf:/etc/squid/squid.conf:ro,z
       - ./proxy/allowlists/pi.txt:/etc/squid/allowed-domains.txt:ro,z
+      - ./proxy/allowlists/build.txt:/etc/squid/build-domains.txt:ro,z
     networks:
       pi: {aliases: [proxy]}
+      egress: {}
+
+  # Only for bin/agent's tool install container (mise, Android SDK), which
+  # sees no workspace. Agents never reach these hosts.
+  proxy-tools:
+    <<: *proxy
+    volumes:
+      - ./proxy/squid.conf:/etc/squid/squid.conf:ro,z
+      - ./proxy/allowlists/tools.txt:/etc/squid/allowed-domains.txt:ro,z
+      - ./proxy/allowlists/none.txt:/etc/squid/build-domains.txt:ro,z
+    networks:
+      tools: {aliases: [proxy]}
       egress: {}
 
   # MCP servers: add them as services on one agent's network, so only that
@@ -151,5 +176,6 @@ networks:
   codex: {internal: true}
   gemini: {internal: true}
   pi: {internal: true}
+  tools: {internal: true}
   egress: {}
 
