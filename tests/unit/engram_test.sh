@@ -30,7 +30,7 @@ test_engram_detected() {
     detect_engram "$T/p"
     assert_eq true "$ENGRAM"
     assert_eq "$T/engram-work" "$ENGRAM_ROOT"
-    assert_eq engram-work "$ENGRAM_DIR"
+    assert_eq "$T/engram-work" "$ENGRAM_AT"
     assert_eq p "$ENGRAM_PROJECT"
     assert_eq "$T/engram-work/projects/p" "$ENGRAM_PACKAGE"
     assert_eq "$T/engram-work/projects/p/.memory" "$ENGRAM_MEMORY"
@@ -63,7 +63,7 @@ test_links_into_different_projects_refused() {
 test_other_context_repo_name() {
     setup_engram engram-personal
     detect_engram "$T/p"
-    assert_eq engram-personal "$ENGRAM_DIR"
+    assert_eq "$T/engram-personal" "$ENGRAM_AT"
 }
 
 test_missing_memory_and_skills_optional() {
@@ -78,8 +78,6 @@ test_missing_memory_and_skills_optional() {
 test_refusals() {
     setup_engram
     rm p/.memory
-    ln -sfn ../etc/projects/p/AGENTS.md p/AGENTS.md
-    assert_dies "can't be mounted at /etc" detect_engram "$T/p"
     ln -sfn '../engram-work/projects/a b/AGENTS.md' p/AGENTS.md
     assert_dies "isn't a form agent-run supports" detect_engram "$T/p"
     ln -sfn ../missing/projects/p/AGENTS.md p/AGENTS.md

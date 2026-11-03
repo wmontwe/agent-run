@@ -2,19 +2,17 @@
 # project's agent context outside the project: the project's top-level
 # AGENTS.md, CLAUDE.md, .memory, .claude, .agents, ... are relative links
 # `../<repo>/projects/<project>/<name>`. A project that commits its own
-# AGENTS.md has links for the rest only. Mounting the package at the path
-# those links reach from /workspace, `/<repo>/projects/<project>`, makes them
-# work unchanged in the container. The package is read-only except its
+# AGENTS.md has links for the rest only. The container sees the workspace at
+# its host path; mounting the package where the links lead,
+# `<workspace's parent>/<repo>/projects/<project>`, makes them work unchanged. The package is read-only except its
 # .memory; the package's skills link into `<repo>/engram-core/.agents/skills`,
 # which is mounted read-only too. The repository's .git, the engram script and
 # engram-core's scripts are never mounted: notes are saved on the host.
 
-# Top-level container paths an engram repository may not be mounted over.
-ENGRAM_RESERVED=" bin boot dev etc home lib lib32 lib64 libx32 media mnt opt proc root run sbin srv sys tmp usr var workspace memory knowledge "
-
 # detect_engram WS: if any top-level entry of WS is engram's link (named like
 # its target), validates the context repository and sets ENGRAM=true,
-# ENGRAM_ROOT (canonical repository), ENGRAM_DIR (its container path below /),
+# ENGRAM_ROOT (canonical repository), ENGRAM_AT (its container path, where
+# the links lead),
 # ENGRAM_PROJECT, ENGRAM_PACKAGE (canonical package) and, when they exist,
 # ENGRAM_MEMORY (the package's .memory) and ENGRAM_SKILLS (engram-core's
 # skills). Without such a link it sets ENGRAM=false. Links in engram's form
@@ -22,7 +20,7 @@ ENGRAM_RESERVED=" bin boot dev etc home lib lib32 lib64 libx32 media mnt opt pro
 # context repository, are refused rather than half-mounted.
 detect_engram() {
     local ws="$1" entry name link dir="" project="" first="" d p rest candidate
-    ENGRAM=false ENGRAM_ROOT="" ENGRAM_DIR="" ENGRAM_PROJECT=""
+    ENGRAM=false ENGRAM_ROOT="" ENGRAM_AT="" ENGRAM_PROJECT=""
     ENGRAM_PACKAGE="" ENGRAM_MEMORY="" ENGRAM_SKILLS=""
     for entry in "$ws"/* "$ws"/.*; do
         [[ -L "$entry" ]] || continue
@@ -46,8 +44,6 @@ detect_engram() {
         fi
     done
     [[ -n "$first" ]] || return 0
-    [[ "$ENGRAM_RESERVED" != *" $dir "* ]] ||
-        die "$first links into ../$dir, which can't be mounted at /$dir in the container"
 
     ENGRAM_ROOT="$(canonical "${ws%/*}/$dir")" ||
         die "$first links into ../$dir, but ${ws%/*}/$dir doesn't exist"
@@ -73,5 +69,5 @@ detect_engram() {
           ! -L "$ENGRAM_ROOT/engram-core/.agents" ]]; then
         ENGRAM_SKILLS="$ENGRAM_ROOT/engram-core/.agents/skills"
     fi
-    ENGRAM=true ENGRAM_DIR="$dir" ENGRAM_PROJECT="$project"
+    ENGRAM=true ENGRAM_AT="${ws%/*}/$dir" ENGRAM_PROJECT="$project"
 }

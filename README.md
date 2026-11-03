@@ -41,8 +41,10 @@ agent claude          # or codex, gemini, pi
 agent claude bash     # run a shell instead of the agent CLI
 ```
 
-The current directory is mounted at `/workspace`; set `WORKSPACE` to use
-another directory. Sign in inside the container (`BROWSER=echo` prints login
+The current directory is mounted at the same path in the container, so builds
+and links work the same on both sides; set `WORKSPACE` to use another
+directory. Workspaces under container system folders (`/opt`, `/usr`, `/tmp`,
+…) are refused. Sign in inside the container (`BROWSER=echo` prints login
 URLs). Credentials and settings persist in `~/.agent-run/<agent>/home`;
 protect that folder. The launcher refuses worktrees, rootful Podman, unsafe
 Git configuration and workspaces that overlap its own checkout or other
@@ -51,7 +53,7 @@ protections.
 
 | Host path | Container path | Access |
 | --- | --- | --- |
-| Git workspace | `/workspace` | Writable except `.git` and protected folders |
+| Git workspace | Same path | Writable except `.git` and protected folders |
 | `~/.agent-run/<agent>/home` | `/home/node` | Writable; per-agent credentials |
 | `~/.agent-run/knowledge` | `/knowledge` | Read-only; shared by agents |
 | `~/.agent-run/memory` | `/memory` | Writable; shared by agents |
@@ -60,7 +62,8 @@ Agents can't reach your clipboard. To copy their output, select with your
 terminal: hold Shift while selecting (Option in Terminal.app and iTerm2).
 
 Git in the container uses a read-only copy of your global gitignore.
-Existing top-level `.idea` is read-only and `.signing` is hidden. Agents can
+Existing top-level `.idea` is read-only, and `.signing` and `local.properties`
+are hidden. Agents can
 read everything else in the workspace, including secrets outside `.signing`
 and committed history. Keep secrets out of workspaces and shared knowledge or
 memory. Review the launcher's post-run report and inspect agent changes on the

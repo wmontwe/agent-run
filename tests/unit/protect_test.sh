@@ -23,6 +23,16 @@ test_check_protectable_dir() {
     assert_dies "is a symlink" check_protectable_dir "$T/link"
 }
 
+test_check_protectable_file() {
+    assert_ok check_protectable_file "$T/missing"
+    touch file
+    assert_ok check_protectable_file "$T/file"
+    mkdir dir
+    assert_dies "is not a regular file" check_protectable_file "$T/dir"
+    ln -s "$T/file" link
+    assert_dies "is a symlink" check_protectable_file "$T/link"
+}
+
 test_check_no_symlinks() {
     mkdir -p idea/run
     echo x >idea/run/app.xml

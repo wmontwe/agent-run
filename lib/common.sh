@@ -17,6 +17,19 @@ overlaps() {
     [[ "$1" == / || "$2" == / || "$1" == "$2" || "$1" == "$2"/* || "$2" == "$1"/* ]]
 }
 
+# Top-level container paths a host folder may not be mounted under: the
+# workspace and engram appear in the container at their host paths.
+CONTAINER_RESERVED=" bin boot dev etc home lib lib32 lib64 libx32 media mnt opt proc root run sbin srv sys tmp usr var memory knowledge mise android "
+
+# check_container_path LABEL PATH: refuses a path whose top-level folder is
+# one the container needs for itself.
+check_container_path() {
+    local top="${2#/}"
+    top="${top%%/*}"
+    [[ "$CONTAINER_RESERVED" != *" $top "* ]] ||
+        die "$1 $2 can't appear at the same path in the container (/$top is the container's own)"
+}
+
 # check_path_chars LABEL PATH: refuses characters that would corrupt a -v
 # mount argument, Compose interpolation or a find -path pattern.
 check_path_chars() {

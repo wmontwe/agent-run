@@ -23,6 +23,15 @@ check_protectable_dir() {
     fi
 }
 
+# check_protectable_file PATH: like check_protectable_dir, for a file.
+check_protectable_file() {
+    if [[ -L "$1" ]]; then
+        die "$1 is a symlink; it can't be protected from the agent"
+    elif [[ -e "$1" && ! -f "$1" ]]; then
+        die "$1 is not a regular file; it can't be protected from the agent"
+    fi
+}
+
 # check_no_symlinks DIR: a symlink inside a read-only directory would leave
 # its target, possibly in the writable workspace, editable through it.
 check_no_symlinks() {

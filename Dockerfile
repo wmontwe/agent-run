@@ -41,7 +41,6 @@ RUN case "$(uname -m)" in \
 ENV MISE_DATA_DIR=/mise \
     MISE_CACHE_DIR=/tmp/mise-cache \
     MISE_STATE_DIR=/tmp/mise-state \
-    MISE_TRUSTED_CONFIG_PATHS=/workspace \
     MISE_NOT_FOUND_AUTO_INSTALL=false \
     MISE_EXEC_AUTO_INSTALL=false \
     MISE_TASK_RUN_AUTO_INSTALL=false \

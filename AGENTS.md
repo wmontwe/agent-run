@@ -37,6 +37,11 @@ Host state is under `~/.agent-run/`: `knowledge/` (read-only `/knowledge`),
 
 ## Architecture
 
+- **Workspace path:** the workspace is mounted at its canonical host path
+  (and is the working directory), so absolute paths in build state and
+  relative links, engram's included, mean the same on the host and in the
+  container. Paths under the container's own top-level folders
+  (`CONTAINER_RESERVED`) are refused.
 - **Containers:** read-only root, no capabilities, `no-new-privileges`,
   `userns_mode: keep-id:uid=1000,gid=1000`, resource limits, no engine
   socket. Base and proxy images pinned by digest, CLIs by lockfile and
@@ -49,10 +54,11 @@ Host state is under `~/.agent-run/`: `knowledge/` (read-only `/knowledge`),
   settings that make host Git load files from an agent-writable folder are
   refused: enforced for hooks and includes, best effort for settings that run
   commands (only path-like words are resolved).
-- **Protected folders** (top level only): `.signing` is covered by an empty
-  read-only folder; `.idea` is mounted read-only and refused if it contains a
-  symlink. Missing ones are not created; a file or symlink in their place is
-  refused.
+- **Protected paths** (top level only): `.signing` is covered by an empty
+  read-only folder and `local.properties` (host paths, often secrets) by an
+  empty read-only file; `.idea` is mounted read-only and refused if it
+  contains a symlink. Missing ones are not created; a symlink or the wrong
+  kind of entry in their place is refused.
 - **Hard links:** protected files that share an inode with a file in a
   writable mount are refused before launch. Agents can't create such links,
   since `link()` across mounts fails.
@@ -113,8 +119,8 @@ Host state is under `~/.agent-run/`: `knowledge/` (read-only `/knowledge`),
 
 ## Invariants: do not regress these
 
-- Agents never see or change an existing `.signing`, and never change an
-  existing `.idea`, including through hard links.
+- Agents never see or change an existing `.signing` or `local.properties`,
+  and never change an existing `.idea`, including through hard links.
 - Host Git never loads hooks or includes from agent-writable files, in the
   workspace or the memory repository. For command settings this is best
   effort; don't widen that claim.

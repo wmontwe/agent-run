@@ -58,10 +58,11 @@ fresh probe
 mkdir -p "$WS/.idea" "$WS/.signing"
 echo idea >"$WS/.idea/a.xml"
 echo key >"$WS/.signing/k.jks"
+echo 'sdk.dir=/Users/me/Library/Android/sdk' >"$WS/local.properties"
 git_config_sum="$(shasum "$WS/.git/config")"
 status=0
 run_agent bash -c '
-    cd /workspace
+    echo "pwd=$PWD"
     w() { if eval "$1" 2>/dev/null; then echo "$2=writable"; else echo "$2=blocked"; fi; }
     w "git config core.fsmonitor x" git_config
     w "touch .git/hooks/x" git_hooks
@@ -69,6 +70,8 @@ run_agent bash -c '
     w "echo x > .idea/a.xml" idea_write
     echo "idea_read=$(cat .idea/a.xml)"
     echo "signing_files=$(ls -A .signing | wc -l | tr -d " ")"
+    echo "local_properties=$(wc -c <local.properties | tr -d " ")"
+    w "echo x > local.properties" local_write
     echo "uid_map=$(head -1 /proc/self/uid_map | tr -s " " | sed "s/^ //")"
     echo "cap_eff=$(sed -n "s/^CapEff:\t//p" /proc/self/status)"
     echo "tmp_fs=$(awk "\$2==\"/tmp\"{t=\$3}END{print t}" /proc/mounts)"
@@ -79,6 +82,7 @@ run_agent bash -c '
     echo "net_http=$(code http://api.anthropic.com/)"
     exit 3' >"$S/out" 2>&1 || status=$?
 check "exit code passes through" 3 "$status"
+check "workspace at its host path" "$WS" "$(value pwd)"
 check ".git config read-only" blocked "$(value git_config)"
 check ".git hooks read-only" blocked "$(value git_hooks)"
 check ".git can't be moved" blocked "$(value git_mv)"
@@ -86,6 +90,9 @@ check ".git/config unchanged on host" "$git_config_sum" "$(shasum "$WS/.git/conf
 check ".idea readable" idea "$(value idea_read)"
 check ".idea read-only" blocked "$(value idea_write)"
 check ".signing hidden" 0 "$(value signing_files)"
+check "local.properties hidden" 0 "$(value local_properties)"
+check "local.properties read-only" blocked "$(value local_write)"
+check "local.properties unchanged on host" "sdk.dir=/Users/me/Library/Android/sdk" "$(cat "$WS/local.properties")"
 check "user namespace (not identity map)" no "$([[ "$(value uid_map)" == "0 0 4294967295" ]] && echo yes || echo no)"
 check "no capabilities" 0000000000000000 "$(value cap_eff)"
 check "/tmp on disk, not tmpfs" no "$([[ "$(value tmp_fs)" == tmpfs ]] && echo yes || echo no)"
@@ -172,15 +179,14 @@ for overlay in AGENTS.md .memory .claude .agents; do
     ln -s "../engram-work/projects/ws/$overlay" "$WS/$overlay"
 done
 run_agent bash -c '
-    cd /workspace
     echo "agents=$(head -1 AGENTS.md)"
     echo "skill=$(cat .claude/skills/shared/SKILL.md 2>&1)"
     if echo x >> AGENTS.md 2>/dev/null; then echo package=writable; else echo package=blocked; fi
     if echo "project note" > .memory/note.md 2>/dev/null; then echo memory=writable; else echo memory=blocked; fi
     echo planted > .memory/evil.sh
-    echo "repo_git=$([ -e /engram-work/.git ] && echo visible || echo absent)"
-    echo "core_scripts=$([ -e /engram-work/engram-core/scripts ] && echo visible || echo absent)"
-    echo "entry=$([ -e /engram-work/engram ] && echo visible || echo absent)"' >"$S/out" 2>&1 || true
+    echo "repo_git=$([ -e ../engram-work/.git ] && echo visible || echo absent)"
+    echo "core_scripts=$([ -e ../engram-work/engram-core/scripts ] && echo visible || echo absent)"
+    echo "entry=$([ -e ../engram-work/engram ] && echo visible || echo absent)"' >"$S/out" 2>&1 || true
 check "engram AGENTS.md reached through the link" "# project ws" "$(value agents)"
 check "engram-core skill reached through the links" "shared skill" "$(value skill)"
 check "engram package read-only" blocked "$(value package)"
@@ -193,7 +199,7 @@ check "engram-core scripts not mounted" absent "$(value core_scripts)"
 check "engram entry point not mounted" absent "$(value entry)"
 check "report shows how to save engram memory" yes \
     "$(grep -q "engram save ws" "$S/out" && echo yes || echo no)"
-AGENT_ENGRAM=0 run_agent bash -c 'echo "optout=$([ -e /engram-work ] && echo mounted || echo absent)"' \
+AGENT_ENGRAM=0 run_agent bash -c 'echo "optout=$([ -e ../engram-work ] && echo mounted || echo absent)"' \
     >"$S/out" 2>&1 || true
 check "AGENT_ENGRAM=0 leaves engram out" absent "$(value optout)"
 # A project that commits its own AGENTS.md: engram links only the rest.
@@ -202,7 +208,6 @@ echo '# own' >"$WS/AGENTS.md"
 echo '# claude ws' >"$E/projects/ws/CLAUDE.md"
 ln -s ../engram-work/projects/ws/CLAUDE.md "$WS/CLAUDE.md"
 run_agent bash -c '
-    cd /workspace
     echo "claude=$(head -1 CLAUDE.md 2>&1)"
     echo "agents=$(head -1 AGENTS.md)"
     if echo x >> AGENTS.md 2>/dev/null; then echo overlay=writable; else echo overlay=blocked; fi' \
@@ -221,7 +226,6 @@ printf '[tools]\njava = "temurin-21"\n' >"$WS/mise.toml"
 ( cd "$WS" && mise lock --platform linux-arm64,linux-x64,macos-arm64 >/dev/null 2>&1 ) ||
     echo "  (mise lock failed on the host; the next checks will fail)"
 AGENT_MEMORY=6g run_agent bash -c '
-    cd /workspace
     echo "java=$(java -version 2>&1 | grep " version " | cut -d\" -f2 | cut -d. -f1)"
     echo "java_path=$(mise which java)"
     if touch /mise/x 2>/dev/null; then echo mise=writable; else echo mise=read-only; fi
@@ -245,6 +249,8 @@ check "agent reaches Maven Central (build allowlist)" 200 "$(value maven)"
 check "AGENT_MEMORY sets the memory limit" 6442450944 "$(value memory)"
 check "memory limit printed at start" yes \
     "$(grep -q "memory limit of 6g" "$S/out" && echo yes || echo no)"
+check "workspace printed at start" yes \
+    "$(grep -qF "starting claude in $WS " "$S/out" && echo yes || echo no)"
 rm "$WS/mise.lock"
 run_agent true >"$S/out" 2>&1 || true
 check "mise config without mise.lock warned about" yes \
@@ -267,7 +273,6 @@ fresh gitignore
 mkdir -p "$HOME_DIR/.config/git"
 echo 'ignored-by-user.txt' >"$HOME_DIR/.config/git/ignore"
 run_agent bash -c '
-    cd /workspace
     touch ignored-by-user.txt other.txt
     echo "ignored=$(git status --porcelain --untracked-files=all | tr "\n" " ")"
     echo "writable=$(echo x 2>/dev/null >/etc/agent-run/gitignore && echo yes || echo no)"' \

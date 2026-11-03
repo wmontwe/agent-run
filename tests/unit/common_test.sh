@@ -83,3 +83,12 @@ test_git_excludes_file_missing() {
     printf '[core]\n\texcludesFile = %s\n' "$T/nowhere" >gitconfig
     assert_eq "" "$(GIT_CONFIG_GLOBAL="$T/gitconfig" git_excludes_file)"
 }
+
+test_check_container_path() {
+    assert_ok check_container_path workspace /Users/me/src/app
+    assert_ok check_container_path workspace /private/var/folders/x/app
+    assert_ok check_container_path workspace /Volumes/work/app
+    for path in /opt/src/app /usr/local/src/app /home/me/app /tmp/app /mise/x; do
+        assert_dies "can't appear at the same path" check_container_path workspace "$path"
+    done
+}
