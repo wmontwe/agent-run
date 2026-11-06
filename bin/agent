@@ -33,7 +33,7 @@ while [[ -L "$entry" ]]; do
     [[ "$entry" == /* ]] || entry="$entry_dir/$entry"
 done
 root="$(cd -P -- "$(dirname -- "$entry")/.." && pwd -P)"
-for lib in common protect git-guard memory report lock engram tools podman; do
+for lib in common protect git-guard memory report lock engram tools github podman; do
     [[ -f "$root/lib/$lib.sh" ]] || { echo "agent: $root/lib/$lib.sh not found" >&2; exit 1; }
     # shellcheck source=/dev/null
     . "$root/lib/$lib.sh"
@@ -89,6 +89,8 @@ for dir in "$HOME/.agent-run/knowledge" "$HOME/.agent-run/memory" \
         die "missing $dir; create it with: mkdir -p ~/.agent-run/{knowledge,memory} ~/.agent-run/$name/home"
     sources+=("$src")
 done
+github_repos="$HOME/.agent-run/github-repos.txt"
+[[ ! -e "$github_repos" && ! -L "$github_repos" ]] || check_github_repos "$github_repos"
 for src in "${sources[@]}"; do
     overlaps "$ws" "$src" && die "workspace $ws overlaps $src, which must stay out of the agent's reach"
 done
@@ -252,11 +254,14 @@ quarantine before || die "could not check memory (is the image built? podman com
 abort_if_signalled
 
 # Launch from the trusted root, so workspace files can't influence Compose.
-# Start the agent's proxy on its own first, so the agent-only options below
-# (--podman-run-args, the extra mounts) never reach it; the agent then runs
-# with --no-deps.
+# Start the agent's proxy and the GitHub relay on their own first, so the
+# agent-only options below (--podman-run-args, the extra mounts) never reach
+# them; the agent then runs with --no-deps.
 cd -- "$root"
 compose "$root" "$ws" up -d "proxy-$name" >/dev/null || die "could not start proxy-$name"
+if [[ -e "$github_repos" ]]; then
+    compose "$root" "$ws" up -d github-relay >/dev/null || die "could not start github-relay"
+fi
 # compose.yaml's mem_limit; set here so the launch line shows the real value.
 export AGENT_MEMORY="${AGENT_MEMORY:-4g}"
 echo "agent: starting $name in $ws with a memory limit of $AGENT_MEMORY (AGENT_MEMORY)" >&2

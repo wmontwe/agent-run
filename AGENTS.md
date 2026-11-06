@@ -22,18 +22,20 @@ limits what it can reach and what it can leave behind for the host to run.
 | `lib/lock.sh` | The memory lock. |
 | `lib/engram.sh` | Engram detection and validation. |
 | `lib/tools.sh` | Build tools: the install container and the agent's tool mounts. |
+| `lib/github.sh` | Checks the GitHub relay's repository list. |
 | `lib/report.sh` | Snapshot and post-run report. |
 | `lib/podman.sh` | Rootless check, `compose`, container naming and cleanup. The only library that calls Podman. |
 | `tests/` | `run.sh` and `unit/` (no Podman), `integration.sh` (needs the Podman machine). |
 | `compose.yaml` | One agent service and one Squid proxy per agent, plus `proxy-tools`. |
 | `Dockerfile` | One image per agent (`ARG AGENT`) with only that CLI. |
 | `agents/<agent>/` | `package.json`, `package-lock.json` and `.npmrc` pinning the agent's CLI. |
-| `proxy/` | Squid image, shared `squid.conf`, and `allowlists/`: `<agent>.txt` per agent, `build.txt` for every agent, `tools.txt` for `proxy-tools` only, `none.txt` empty. |
+| `proxy/` | Squid image, shared `squid.conf`, and `allowlists/`: `<agent>.txt` per agent, `build.txt` for every agent, `tools.txt` for `proxy-tools` only, `none.txt` empty. `github-relay/` holds the relay's nginx image and config. |
 | `workspace/` | Default workspace for plain `podman compose run`. |
 
 Host state is under `~/.agent-run/`: `knowledge/` (read-only `/knowledge`),
 `memory/` (read-write `/memory`, shared by all agents), `<agent>/home/`
-(`/home/node`), and `quarantine/` (never mounted).
+(`/home/node`), `quarantine/` (never mounted), and `github-repos.txt` (the
+relay's repositories, never mounted in an agent).
 
 ## Architecture
 
@@ -50,6 +52,13 @@ Host state is under `~/.agent-run/`: `knowledge/` (read-only `/knowledge`),
   way out is its proxy (`proxy:3128`), which allows HTTPS `CONNECT` to
   listed hosts. The proxy's `egress` network can reach the Mac, the VM's
   sshd and the gvproxy gateway; Squid's `private` ACL denies those.
+- **GitHub relay:** a CONNECT proxy can't see methods or paths, so GitHub
+  stays off the allowlists. `github-relay` (nginx, on every agent's network
+  and `egress`) ends the agent's connection and forwards only GET and HEAD
+  for the repositories in `~/.agent-run/github-repos.txt`, to `api.github.com`
+  only, with a verified certificate and without the agent's headers. It adds
+  no token, so GitHub's anonymous rate limit applies. `bin/agent` starts it
+  only if that file exists and refuses a list with invalid lines.
 - **Git:** `<workspace>/.git` is mounted read-only; agents never commit. Git
   settings that make host Git load files from an agent-writable folder are
   refused: enforced for hooks and includes, best effort for settings that run
@@ -134,7 +143,10 @@ Host state is under `~/.agent-run/`: `knowledge/` (read-only `/knowledge`),
 - Memory's `.git` is trusted only when it matches the `trust-memory` record.
 - The quarantine never moves files on the host.
 - Allowlists never match by reverse DNS (`dstdomain -n`), stay minimal, and
-  prefer exact hosts. Agents never reach `proxy-tools` hosts (GitHub).
+  prefer exact hosts. Agents never reach `proxy-tools` hosts (GitHub), and
+  reach `api.github.com` only through the relay.
+- The relay never forwards anything but GET and HEAD, anywhere but
+  `api.github.com`, and never turns off certificate verification.
 - Tools are installed only from a lockfile or checksum; the tool volume is
   read-only for agents.
 - agent-run never configures the project's runtimes or build settings.
@@ -167,6 +179,10 @@ Host state is under `~/.agent-run/`: `knowledge/` (read-only `/knowledge`),
   the ACL has `-n`.
 - The Squid image (`ubuntu/squid`, LTS-based tags only) starts Squid through
   pebble, which only forwards Squid's log with `--verbose`.
+- Squid's GnuTLS build (`ubuntu/squid`) doesn't verify an origin's certificate
+  and can't read from GitHub over TLS 1.3, which is why the relay is nginx.
+- nginx treats `\\` in a quoted string as one backslash; the relay's regex uses
+  `\x5c`. It also needs its temp paths under `/tmp` on a read-only root.
 - Claude Code needs its postinstall script to put its binary in place; the
   `Dockerfile` does that step itself. Remove it once Claude Code works with
   `--ignore-scripts`.

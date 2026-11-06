@@ -343,5 +343,39 @@ check "allowed name passes" yes "$([[ "$(code https://one.one.one.one/)" != 000 
 check "bare IP with an allowed PTR refused" 000 "$(code https://1.1.1.1/)"
 podman rm -f agent-run-it-proxy >/dev/null
 
+echo "github relay"
+fresh relay
+echo 'not a repo' >"$HOME_DIR/.agent-run/github-repos.txt"
+check "invalid repository list refused" 1 "$(run_agent true >/dev/null 2>&1; echo $?)"
+printf '# comment\nthunderbird/thunderbird-android\n' >"$scratch/repos.txt"
+(cd "$here/.." && podman compose --env-file /dev/null build github-relay) >/dev/null
+podman run -d --rm --name agent-run-it-relay --read-only --cap-drop=ALL \
+    --tmpfs /tmp:size=64m,mode=1777 --network agent-run_claude --network agent-run_egress \
+    -v "$here/../proxy/github-relay/nginx.conf:/etc/nginx/nginx.conf:ro,z" \
+    -v "$here/../proxy/github-relay/start.sh:/etc/nginx/start.sh:ro,z" \
+    -v "$scratch/repos.txt:/etc/github-repos.txt:ro,z" \
+    --entrypoint /bin/sh localhost/agent-run-github-relay /etc/nginx/start.sh >/dev/null
+relay() {
+    podman run --rm --network agent-run_claude --entrypoint curl localhost/agent-run-claude \
+        -s --noproxy '*' --path-as-is -o /dev/null -m20 -w '%{http_code}' \
+        -X "$1" "http://agent-run-it-relay:8080$2" </dev/null
+}
+for _ in $(seq 20); do
+    [[ "$(relay GET /user)" == 403 ]] && break
+    perl -e 'select(undef, undef, undef, 0.5)'
+done
+repo=/repos/thunderbird/thunderbird-android
+check "listed repository readable" 200 "$(relay GET "$repo")"
+check "write refused" 403 "$(relay POST "$repo/issues")"
+check "unlisted repository refused" 403 "$(relay GET /repos/thunderbird/thunderbird-desktop)"
+check "name with the listed prefix refused" 403 "$(relay GET "$repo-evil")"
+check "other API refused" 403 "$(relay GET /gists/public)"
+check "path leaving the repository refused" 403 "$(relay GET "$repo/../../../gists/public")"
+check "encoded path refused" 403 "$(relay GET "$repo/%2e%2e/x")"
+podman stop -t1 agent-run-it-relay >/dev/null
+check "api.github.com blocked through the proxy" 000 "$(podman run --rm --network agent-run_claude \
+    --entrypoint curl localhost/agent-run-claude -s -o /dev/null -m8 -w '%{http_code}' \
+    -x http://proxy:3128 https://api.github.com/ </dev/null)"
+
 echo "$passed passed, $failed failed"
 [[ $failed -eq 0 ]]

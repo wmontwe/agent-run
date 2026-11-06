@@ -36,8 +36,9 @@ x-agent: &agent
     HTTPS_PROXY: http://proxy:3128
     http_proxy: http://proxy:3128
     https_proxy: http://proxy:3128
-    NO_PROXY: localhost,127.0.0.1
-    no_proxy: localhost,127.0.0.1
+    NO_PROXY: localhost,127.0.0.1,github-relay
+    no_proxy: localhost,127.0.0.1,github-relay
+    GITHUB_API_URL: http://github-relay:8080
     NODE_USE_ENV_PROXY: "1"
     MISE_TRUSTED_CONFIG_PATHS: ${WORKSPACE:-/workspace}
     # Java ignores the variables above; every JVM reads this one, Gradle's
@@ -151,6 +152,27 @@ services:
     networks:
       pi: {aliases: [proxy]}
       egress: {}
+
+  # Read-only GitHub REST API for the repositories in
+  # ~/.agent-run/github-repos.txt; bin/agent starts it only if that file exists.
+  # It shares every agent's network, but only ever forwards to api.github.com,
+  # so it can't connect agents.
+  github-relay:
+    build: {context: proxy/github-relay}
+    image: localhost/agent-run-github-relay
+    entrypoint: [/bin/sh, /etc/nginx/start.sh]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    mem_limit: 128m
+    pids_limit: 64
+    cpus: 1
+    volumes:
+      - ./proxy/github-relay/nginx.conf:/etc/nginx/nginx.conf:ro,z
+      - ./proxy/github-relay/start.sh:/etc/nginx/start.sh:ro,z
+      - ${HOME}/.agent-run/github-repos.txt:/etc/github-repos.txt:ro,z
+    networks: [claude, codex, gemini, pi, egress]
 
   # Only for bin/agent's tool install container (mise, Android SDK), which
   # sees no workspace. Agents never reach these hosts.

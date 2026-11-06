@@ -118,6 +118,30 @@ engram's instead. Agents can't save. Review the notes and run
 `engram save <project>` on the host, as the post-run report shows. Set
 `AGENT_ENGRAM=0` to run without it.
 
+## GitHub
+
+Agents can't reach GitHub directly. To let them read issues and PRs of public
+repositories, list the repositories in `~/.agent-run/github-repos.txt`, one
+`owner/repo` per line:
+
+```
+thunderbird/thunderbird-android
+```
+
+Agents then read them through a relay at `$GITHUB_API_URL`
+(`http://github-relay:8080`), for example with
+`curl "$GITHUB_API_URL/repos/owner/repo/issues?per_page=20"`. Tell them in your
+project's `AGENTS.md` or in `~/.agent-run/knowledge`. The relay only allows
+reads of listed repositories through the REST API, so `gh` commands that use
+GraphQL won't work. Follow pages with `page=2`, since `Link` headers point at
+GitHub itself. GitHub allows 60 requests an hour per public IP without a token.
+
+> [!WARNING]
+> Anyone can write public issues and comments. Treat them as untrusted input
+> that can try to steer the agent.
+
+After changing the list, run `podman compose restart github-relay`.
+
 ## Network and maintenance
 
 Each agent's HTTPS destinations are listed in
