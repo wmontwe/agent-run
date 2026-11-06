@@ -32,6 +32,18 @@ check_protectable_file() {
     fi
 }
 
+# check_no_symlink_path ROOT PATH: no part of ROOT/PATH may be a symlink, for a
+# mount target in a folder agents can write to. A planted link would move the
+# mount. A missing part is fine.
+check_no_symlink_path() {
+    local current="$1" part parts
+    IFS=/ read -r -a parts <<<"$2"
+    for part in "${parts[@]}"; do
+        current="$current/$part"
+        [[ ! -L "$current" ]] || die "$(printf '%q' "$current") is a symlink; refusing to mount over it"
+    done
+}
+
 # check_no_symlinks DIR: a symlink inside a read-only directory would leave
 # its target, possibly in the writable workspace, editable through it.
 check_no_symlinks() {

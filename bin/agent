@@ -176,6 +176,24 @@ if [[ -n "$excludes" ]]; then
         -e GIT_CONFIG_VALUE_0=/etc/agent-run/gitignore)
 fi
 
+# The user's instructions for agents, where each CLI loads its global ones. A
+# read-only copy, so agents can't change what the next run starts with.
+instructions="$HOME/.agent-run/instructions.md"
+if [[ -e "$instructions" || -L "$instructions" ]]; then
+    check_protectable_file "$instructions"
+    case "$name" in
+        claude) instructions_at=.claude/CLAUDE.md ;;
+        codex) instructions_at=.codex/AGENTS.md ;;
+        gemini) instructions_at=.gemini/GEMINI.md ;;
+        pi) instructions_at=.pi/agent/AGENTS.md ;;
+    esac
+    check_no_symlink_path "${sources[3]}" "$instructions_at"
+    [[ ! -s "${sources[3]}/$instructions_at" ]] ||
+        echo "agent: ~/.agent-run/instructions.md covers $instructions_at from the agent's home" >&2
+    cp -- "$instructions" "$tmp/instructions.md"
+    protect_mounts+=(-v "$tmp/instructions.md:/home/node/$instructions_at:ro,z")
+fi
+
 protected=("$ws/.git")
 for dir in "${hidden[@]}" "${readonly_dirs[@]}"; do
     [[ -d "$ws/$dir" ]] && protected+=("$ws/$dir")
@@ -184,6 +202,7 @@ for file in "${hidden_files[@]}"; do
     [[ -f "$ws/$file" ]] && protected+=("$ws/$file")
 done
 protected+=(${MEM_PROTECTED[@]+"${MEM_PROTECTED[@]}"})
+[[ -f "$instructions" ]] && protected+=("$instructions")
 if [[ $ENGRAM == true ]]; then
     protected+=("$ENGRAM_PACKAGE")
     [[ -n "$ENGRAM_SKILLS" ]] && protected+=("$ENGRAM_SKILLS")

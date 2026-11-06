@@ -65,6 +65,10 @@ protections.
 | `~/.agent-run/knowledge` | `/knowledge` | Read-only, shared by agents |
 | `~/.agent-run/memory` | `/memory` | Writable, shared by agents |
 
+To give every agent the same instructions at start, write them in
+`~/.agent-run/instructions.md`. Agents see them read-only as their global
+instructions, in place of any they keep in their own home.
+
 Agents can't reach your clipboard. To copy their output, select with your
 terminal: hold Shift while selecting (Option in Terminal.app and iTerm2).
 
@@ -130,8 +134,8 @@ thunderbird/thunderbird-android
 
 Agents then read them through a relay at `$GITHUB_API_URL`
 (`http://github-relay:8080`), for example with
-`curl "$GITHUB_API_URL/repos/owner/repo/issues?per_page=20"`. Tell them in your
-project's `AGENTS.md` or in `~/.agent-run/knowledge`. The relay only allows
+`curl "$GITHUB_API_URL/repos/owner/repo/issues?per_page=20"`. Tell them how in
+`~/.agent-run/instructions.md` (see [Run](#run)). The relay only allows
 reads of listed repositories through the REST API, so `gh` commands that use
 GraphQL won't work. Follow pages with `page=2`, since `Link` headers point at
 GitHub itself. GitHub allows 60 requests an hour per public IP without a token.

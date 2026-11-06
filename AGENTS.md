@@ -34,8 +34,8 @@ limits what it can reach and what it can leave behind for the host to run.
 
 Host state is under `~/.agent-run/`: `knowledge/` (read-only `/knowledge`),
 `memory/` (read-write `/memory`, shared by all agents), `<agent>/home/`
-(`/home/node`), `quarantine/` (never mounted), and `github-repos.txt` (the
-relay's repositories, never mounted in an agent).
+(`/home/node`), `quarantine/` (never mounted), `github-repos.txt` (the relay's
+repositories, never mounted in an agent), and `instructions.md`.
 
 ## Architecture
 
@@ -104,6 +104,10 @@ relay's repositories, never mounted in an agent).
   through the VM's QEMU.
 - **Memory limit:** `AGENT_MEMORY` sets the container limit and nothing else;
   `bin/agent` prints it at launch.
+- **Instructions:** `~/.agent-run/instructions.md` is copied into the temp
+  folder and mounted read-only where the agent's CLI loads its global
+  instructions (the `case` in `bin/agent`). Links in that path are refused,
+  since the agent's home is writable.
 - **Global gitignore:** the host's global ignore file (`core.excludesFile`,
   else Git's default) is copied into the temp folder and mounted read-only,
   with `GIT_CONFIG_*` pointing the container's Git at it.
@@ -207,7 +211,7 @@ relay's repositories, never mounted in an agent).
 - Short comments that explain *why*. No derived or guessed settings: leave
   configuration to the tool that owns it.
 - One agent per image and service. Adding an agent touches `agents/<agent>/`,
-  `compose.yaml`, `proxy/allowlists/<agent>.txt`, the `case` in `bin/agent`,
+  `compose.yaml`, `proxy/allowlists/<agent>.txt`, the `case`s in `bin/agent`,
   `.github/dependabot.yml` and the README.
 
 ## Testing

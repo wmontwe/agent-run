@@ -173,3 +173,13 @@ test_hard_links_local_clone_allowed() {
     [[ -n "$(find ws/.git -type f -links +1 -print -quit)" ]] || fail "expected linked objects"
     assert_ok hard_links
 }
+
+test_check_no_symlink_path() {
+    mkdir -p home/.claude
+    assert_ok check_no_symlink_path "$T/home" .claude/CLAUDE.md
+    assert_ok check_no_symlink_path "$T/home" .gemini/GEMINI.md
+    ln -s /etc/x home/.claude/CLAUDE.md
+    assert_dies "is a symlink" check_no_symlink_path "$T/home" .claude/CLAUDE.md
+    ln -s "$T" home/.pi
+    assert_dies "is a symlink" check_no_symlink_path "$T/home" .pi/agent/AGENTS.md
+}

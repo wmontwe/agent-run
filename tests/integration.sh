@@ -343,6 +343,20 @@ check "allowed name passes" yes "$([[ "$(code https://one.one.one.one/)" != 000 
 check "bare IP with an allowed PTR refused" 000 "$(code https://1.1.1.1/)"
 podman rm -f agent-run-it-proxy >/dev/null
 
+echo "instructions"
+fresh instructions
+echo 'from the user' >"$HOME_DIR/.agent-run/instructions.md"
+run_agent bash -c '
+    echo "text=$(cat ~/.claude/CLAUDE.md)"
+    if echo x >~/.claude/CLAUDE.md 2>/dev/null; then echo "write=writable"; else echo "write=blocked"; fi' >"$S/out" 2>&1
+check "instructions reach the agent" "from the user" "$(value text)"
+check "instructions read-only" blocked "$(value write)"
+check "instructions unchanged on host" "from the user" "$(cat "$HOME_DIR/.agent-run/instructions.md")"
+fresh instructions-link
+echo 'from the user' >"$HOME_DIR/.agent-run/instructions.md"
+ln -s /etc "$HOME_DIR/.agent-run/claude/home/.claude"
+check "planted symlink refused" 1 "$(run_agent true >/dev/null 2>&1; echo $?)"
+
 echo "github relay"
 fresh relay
 echo 'not a repo' >"$HOME_DIR/.agent-run/github-repos.txt"
