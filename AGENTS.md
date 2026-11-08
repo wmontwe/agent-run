@@ -28,6 +28,7 @@ limits what it can reach and what it can leave behind for the host to run.
 | `tests/` | `run.sh` and `unit/` (no Podman), `integration.sh` (needs the Podman machine). |
 | `compose.yaml` | One agent service and one Squid proxy per agent, plus `proxy-tools`. |
 | `Dockerfile` | One image per agent (`ARG AGENT`) with only that CLI. |
+| `image/` | The images' entrypoint (virtual display, Playwright MCP registration), `browser-mcp`, and Pi's `browser` command and skill. |
 | `agents/<agent>/` | `package.json`, `package-lock.json` and `.npmrc` pinning the agent's CLI. |
 | `proxy/` | Squid image, shared `squid.conf`, and `allowlists/`: `<agent>.txt` per agent, `build.txt` for every agent, `tools.txt` for `proxy-tools` only, `none.txt` empty. `github-relay/` holds the relay's nginx image and config. |
 | `workspace/` | Default workspace for plain `podman compose run`. |
@@ -102,6 +103,16 @@ repositories, never mounted in an agent), and `instructions.md`.
   proxy through `JAVA_TOOL_OPTIONS`. On ARM64 the image has x86-64 runtime
   libraries, because Android's `aapt2` exists only for x86-64 and runs
   through the VM's QEMU.
+- **Display and browser:** the entrypoint starts Xvfb on `:99` without a TCP
+  listener, and when the agent's CLI starts, registers `browser-mcp`
+  (Playwright MCP on Debian's Chromium, headless, isolated profile, through
+  the proxy) in the CLI's user settings if missing; Gemini gets it from
+  `/etc/gemini-cli/settings.json`. Chromium runs with `--no-sandbox`: its
+  sandbox needs user namespaces, and the container is the sandbox.
+  `playwright-mcp` comes from the agent's lockfile; browsers are never
+  downloaded. Pi has no MCP: it gets `browser` (playwright-core over CDP to
+  one Chromium per container, same settings) and the `browser` skill, mounted
+  read-only by `bin/agent` like the instructions.
 - **Memory limit:** `AGENT_MEMORY` sets the container limit and nothing else;
   `bin/agent` prints it at launch.
 - **Instructions:** `~/.agent-run/instructions.md` is copied into the temp

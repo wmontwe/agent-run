@@ -1,0 +1,130 @@
+#!/usr/bin/env node
+// Browser commands for agents without MCP (Pi): one headless Chromium per
+// container, kept running between calls, driven over CDP with playwright-core
+// from the agent's lockfile. Same settings as browser-mcp: Debian's Chromium,
+// a fresh profile in /tmp, the agent's proxy, no Chromium sandbox (the
+// container is the sandbox).
+"use strict";
+const { spawn } = require("child_process");
+const { chromium } = require("/opt/agent/node_modules/playwright-core");
+
+const endpoint = "http://127.0.0.1:9222";
+const usage = `usage: browser <command>
+  open <url>              load a page; prints title and console output
+  screenshot <file> [--full]
+  click <selector>        Playwright selectors: css, text=..., role=button[name="OK"]
+  type <selector> <text>
+  press <key>             e.g. Enter, Tab
+  wait <selector>
+  text [selector]         visible text (default: body)
+  eval <js>               evaluates in the page, prints the result as JSON
+  console                 console output and errors since the last open
+  stop                    stop the browser`;
+
+async function running() {
+    try {
+        return (await fetch(`${endpoint}/json/version`)).ok;
+    } catch {
+        return false;
+    }
+}
+
+async function start() {
+    if (await running()) return;
+    spawn("/usr/bin/chromium", [
+        "--headless", "--no-sandbox", "--remote-debugging-port=9222",
+        "--remote-debugging-address=127.0.0.1", "--user-data-dir=/tmp/browser-profile",
+        "--window-size=1280,800", "--proxy-server=http://proxy:3128",
+        "--proxy-bypass-list=<-loopback>", "--no-first-run", "about:blank",
+    ], { detached: true, stdio: "ignore" }).unref();
+    for (let i = 0; i < 100; i++) {
+        if (await running()) return;
+        await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error("Chromium did not start");
+}
+
+// Console output is collected in the page, since each call is a new CDP
+// connection and would miss what happened before it.
+const collect = `(() => {
+    if (window.__agentConsole) return;
+    window.__agentConsole = [];
+    for (const level of ["log", "info", "warn", "error", "debug"]) {
+        const orig = console[level];
+        console[level] = (...args) => {
+            window.__agentConsole.push(level + ": " + args.map(String).join(" "));
+            orig.apply(console, args);
+        };
+    }
+    addEventListener("error", (e) => window.__agentConsole.push("pageerror: " + e.message));
+    addEventListener("unhandledrejection", (e) => window.__agentConsole.push("unhandledrejection: " + e.reason));
+})()`;
+
+async function main([cmd, ...args]) {
+    if (!cmd || cmd === "help" || cmd === "--help") return console.log(usage);
+    if (cmd === "stop") {
+        if (await running()) {
+            const browser = await chromium.connectOverCDP(endpoint);
+            await (await browser.newBrowserCDPSession()).send("Browser.close");
+        }
+        return;
+    }
+    await start();
+    const browser = await chromium.connectOverCDP(endpoint);
+    const context = browser.contexts()[0];
+    await context.addInitScript(collect);
+    const page = context.pages()[0] || (await context.newPage());
+    const need = (n) => {
+        if (args.length < n) throw new Error(usage);
+    };
+    switch (cmd) {
+        case "open":
+            need(1);
+            await page.goto(args[0], { waitUntil: "load" });
+            await page.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => {});
+            console.log(`${await page.title()}\n${page.url()}`);
+            for (const line of await page.evaluate("window.__agentConsole || []")) console.log(line);
+            break;
+        case "screenshot":
+            need(1);
+            await page.screenshot({ path: args[0], fullPage: args.includes("--full") });
+            console.log(args[0]);
+            break;
+        case "click":
+            need(1);
+            await page.click(args[0]);
+            break;
+        case "type":
+            need(2);
+            await page.fill(args[0], args[1]);
+            break;
+        case "press":
+            need(1);
+            await page.keyboard.press(args[0]);
+            break;
+        case "wait":
+            need(1);
+            await page.waitForSelector(args[0]);
+            break;
+        case "text":
+            console.log((await page.innerText(args[0] || "body")).slice(0, 20000));
+            break;
+        case "eval":
+            need(1);
+            console.log(JSON.stringify(await page.evaluate(args[0]), null, 2));
+            break;
+        case "console":
+            for (const line of await page.evaluate("window.__agentConsole || []")) console.log(line);
+            break;
+        default:
+            throw new Error(usage);
+    }
+}
+
+main(process.argv.slice(2)).then(
+    () => process.exit(0),
+    (e) => {
+        console.error(e.message);
+        process.exit(1);
+    },
+);

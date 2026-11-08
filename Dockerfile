@@ -17,6 +17,17 @@ RUN if [ "$(uname -m)" = aarch64 ]; then \
       && rm -rf /var/lib/apt/lists/*; \
     fi
 
+# Seeing what the agent built: Chromium, headless, for Playwright MCP
+# (image/browser-mcp) and Pi's `browser` command (image/browser); a virtual
+# display (Xvfb, started by image/entrypoint.sh) with `scrot` for screenshots;
+# and the X11, OpenGL (Mesa, software rendering) and font libraries the JDK's
+# AWT and Compose Desktop's Skiko load.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends chromium xvfb scrot \
+      libxext6 libxrender1 libxtst6 libxi6 libxrandr2 libfreetype6 fontconfig \
+      libgl1 libgl1-mesa-dri fonts-dejavu-core fonts-liberation fonts-noto-color-emoji \
+    && rm -rf /var/lib/apt/lists/*
+
 # mise, pinned by version and checksum (Dependabot can't update these; bump by
 # hand from the release's SHASUMS256.txt). bin/agent installs a project's
 # tools with it in a separate container into a per-agent volume at /mise,
@@ -68,8 +79,14 @@ RUN cd /opt/agent \
     fi \
     && npm cache clean --force
 
+# Modes set here, so they never depend on the checkout.
+COPY --chmod=755 image/entrypoint.sh /usr/local/bin/agent-entrypoint
+COPY --chmod=755 image/browser-mcp image/browser /usr/local/bin/
+COPY image/gemini-settings.json /etc/gemini-cli/settings.json
 ENV PATH=/opt/agent/node_modules/.bin:$PATH
 ENV BROWSER=echo
+ENV AGENT_NAME=${AGENT}
 USER node
 WORKDIR /workspace
+ENTRYPOINT ["/usr/local/bin/agent-entrypoint"]
 CMD ["bash"]

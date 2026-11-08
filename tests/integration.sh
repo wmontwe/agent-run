@@ -391,5 +391,28 @@ check "api.github.com blocked through the proxy" 000 "$(podman run --rm --networ
     --entrypoint curl localhost/agent-run-claude -s -o /dev/null -m8 -w '%{http_code}' \
     -x http://proxy:3128 https://api.github.com/ </dev/null)"
 
+echo "display and browser"
+fresh display
+echo "<title>probe</title><h1>hello</h1>" >"$WS/index.html"
+run_agent bash -c '
+    png() { [ "$(head -c 4 "$1" 2>/dev/null | od -An -tx1 | tr -d " ")" = 89504e47 ] && echo yes || echo no; }
+    echo "display=$DISPLAY"
+    scrot /tmp/screen.png 2>/dev/null; echo "scrot=$(png /tmp/screen.png)"
+    chromium --headless --no-sandbox --screenshot=/tmp/page.png "file://$PWD/index.html" >/dev/null 2>&1
+    echo "chromium=$(png /tmp/page.png)"
+    command -v playwright-mcp >/dev/null && echo mcp=yes || echo mcp=no
+    timeout 5 browser-mcp --help >/dev/null 2>&1 && echo mcp_runs=yes || echo mcp_runs=no
+    echo "cli_title=$(browser open "file://$PWD/index.html" | head -1)"
+    browser click h1 && browser screenshot /tmp/cli.png >/dev/null; echo "cli=$(png /tmp/cli.png)"
+    browser stop' >"$S/out" 2>&1 || true
+check "virtual display set" :99 "$(value display)"
+check "screenshot of the display" yes "$(value scrot)"
+check "headless Chromium screenshot" yes "$(value chromium)"
+check "Playwright MCP installed" yes "$(value mcp)"
+check "Playwright MCP starts" yes "$(value mcp_runs)"
+# Pi's command; the claude image has playwright-core through @playwright/mcp.
+check "browser command loads a page" probe "$(value cli_title)"
+check "browser command screenshot" yes "$(value cli)"
+
 echo "$passed passed, $failed failed"
 [[ $failed -eq 0 ]]

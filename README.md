@@ -112,6 +112,21 @@ AGENT_MEMORY=12g agent claude
 
 Build hosts every agent may reach are listed in `proxy/allowlists/build.txt`.
 
+## Screenshots and the browser
+
+Agents can look at what they build. Claude Code, Codex and Gemini CLI get a
+Playwright MCP server (`playwright`) driving a headless Chromium in the
+agent's container, for pages served there (`localhost`) and allowed hosts;
+its screenshots go straight to the model. It is registered in the agent's
+user settings at each start if missing. Pi has no MCP: it gets the same
+Chromium as a `browser` command (`open`, `click`, `type`, `screenshot`,
+`console`, …; `browser help` lists them) and a read-only `browser` skill in
+`~/.pi/agent/skills` that tells it so.
+
+GUI apps such as Compose Desktop run on a virtual display (`DISPLAY=:99`,
+private to the container); `scrot /tmp/screen.png` captures it. Chromium and a
+Gradle build together need more than the default memory (see above).
+
 ## Engram
 
 Projects linked to an [engram](https://github.com/wmontwe/engram-core) context

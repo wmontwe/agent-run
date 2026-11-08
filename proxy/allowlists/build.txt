@@ -1,6 +1,8 @@
 # Hosts every agent may reach to build projects: Gradle distributions and
-# plugins, Maven and Google repositories. Loaded by every agent proxy next to
-# its own allowlist. Keep it to download hosts projects actually need.
+# plugins, Maven and Google repositories, and Node and npm packages for
+# Kotlin/JS (Node from nodejs.org, packages through Yarn). Loaded by every
+# agent proxy next to its own allowlist. Keep it to download hosts projects
+# actually need.
 # Apply changes: podman compose restart proxy-<agent>
 services.gradle.org
 downloads.gradle.org
@@ -13,3 +15,6 @@ maven.google.com
 maven.mozilla.org
 jitpack.io
 central.sonatype.com
+nodejs.org
+registry.npmjs.org
+registry.yarnpkg.com

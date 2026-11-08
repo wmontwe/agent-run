@@ -4,9 +4,9 @@
 # container, removed with it. A compose `- /tmp` entry would instead become a
 # named volume shared across runs. Podman's automatic read-only tmpfs mounts
 # are disabled, since with keep-id they would cover the volumes (and use RAM);
-# /dev/shm gets the usual 64 MB tmpfs back.
+# /dev/shm gets a 256 MB tmpfs back, enough for Chromium.
 AGENT_RUN_ARGS="--read-only-tmpfs=false --mount type=volume,dst=/tmp \
---mount type=volume,dst=/var/tmp --mount type=tmpfs,dst=/dev/shm,tmpfs-size=64m,tmpfs-mode=1777"
+--mount type=volume,dst=/var/tmp --mount type=tmpfs,dst=/dev/shm,tmpfs-size=256m,tmpfs-mode=1777"
 
 # Rootful Podman ignores keep-id: the container user is then a real VM user and
 # an escape lands as VM root, which can reach the host share. Require rootless.

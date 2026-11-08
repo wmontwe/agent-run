@@ -193,6 +193,13 @@ if [[ -e "$instructions" || -L "$instructions" ]]; then
     cp -- "$instructions" "$tmp/instructions.md"
     protect_mounts+=(-v "$tmp/instructions.md:/home/node/$instructions_at:ro,z")
 fi
+# Pi has no MCP, so it gets the browser as a command (image/browser) and a
+# skill that tells it so, read-only in its global skills like the instructions.
+if [[ "$name" == pi ]]; then
+    check_no_symlink_path "${sources[3]}" .pi/agent/skills/browser/SKILL.md
+    cp -- "$root/image/browser-skill.md" "$tmp/browser-skill.md"
+    protect_mounts+=(-v "$tmp/browser-skill.md:/home/node/.pi/agent/skills/browser/SKILL.md:ro,z")
+fi
 
 protected=("$ws/.git")
 for dir in "${hidden[@]}" "${readonly_dirs[@]}"; do
