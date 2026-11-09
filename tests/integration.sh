@@ -360,6 +360,27 @@ echo 'from the user' >"$HOME_DIR/.agent-run/instructions.md"
 ln -s /etc "$HOME_DIR/.agent-run/claude/home/.claude"
 check "planted symlink refused" 1 "$(run_agent true >/dev/null 2>&1; echo $?)"
 
+echo "gradle state"
+fresh gradle
+mkdir -p "$WS/app/build" "$WS/.gradle"
+touch "$WS/settings.gradle.kts" "$WS/app/build.gradle.kts"
+echo host >"$WS/app/build/host.txt"
+echo host >"$WS/.gradle/host.txt"
+run_agent bash -c '
+    echo "build_seen=$(ls -A app/build .gradle | tr -d "\n")"
+    echo agent >app/build/agent.txt && echo agent >.gradle/agent.txt &&
+        echo agent >.kotlin/agent.txt && echo "wrote=yes"' >"$S/out" 2>&1
+check "host build output hidden" ".gradle:app/build:" "$(value build_seen)"
+check "agent writes its own build state" yes "$(value wrote)"
+check "host build/ untouched" host.txt "$(ls -A "$WS/app/build" | tr '\n' ' ' | sed 's/ $//')"
+check "host .gradle untouched" host.txt "$(ls -A "$WS/.gradle" | tr '\n' ' ' | sed 's/ $//')"
+check "host .kotlin untouched" "" "$(ls -A "$WS/.kotlin" 2>/dev/null)"
+run_agent bash -c 'echo "kept=$(cat app/build/agent.txt)"' >"$S/out" 2>&1
+check "agent build state kept between runs" agent "$(value kept)"
+podman volume rm "agent-run-claude-build-$(printf '%s' "$WS" | shasum | cut -c1-12)" >/dev/null
+rm -r "$WS/app/build" && ln -s /etc "$WS/app/build"
+check "symlinked build folder refused" 1 "$(run_agent true >/dev/null 2>&1; echo $?)"
+
 echo "github relay"
 fresh relay
 echo 'not a repo' >"$HOME_DIR/.agent-run/github-repos.txt"

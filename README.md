@@ -112,6 +112,14 @@ AGENT_MEMORY=12g agent claude
 
 Build hosts every agent may reach are listed in `proxy/allowlists/build.txt`.
 
+Agents get their own Gradle state: the `build`, `.gradle` and `.kotlin` folders
+of your project are hidden from them and replaced by their own copies. You can
+build on the Mac while an agent builds in the same checkout, and agents can't
+change what your Gradle and IDE load. You don't see what agents build, so ask
+them to copy outputs you need, like an APK, outside `build`. Their state is kept
+per agent and project in `agent-run-<agent>-build-*` volumes. Remove a stale one
+with `podman volume rm`.
+
 ## Screenshots and the browser
 
 Agents can look at what they build. Claude Code, Codex and Gemini CLI get a

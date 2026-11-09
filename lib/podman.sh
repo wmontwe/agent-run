@@ -106,3 +106,18 @@ resume_paused() {
     done
     PAUSED=()
 }
+
+# prepare_gradle_state IMAGE VOLUME PATHS...: creates VOLUME and the PATHS in
+# it, since Podman only mounts existing subpaths. In a container without
+# network, as the agent's user, so the agent owns them.
+prepare_gradle_state() {
+    local image="$1" volume="$2"
+    shift 2
+    podman volume exists "$volume" || podman volume create "$volume" >/dev/null ||
+        die "could not create volume $volume"
+    podman run --rm --network none --read-only --cap-drop ALL \
+        --security-opt no-new-privileges --userns keep-id:uid=1000,gid=1000 \
+        -v "$volume:/state" --entrypoint sh "$image" \
+        -c 'cd /state && mkdir -p -- "$@"' prepare "$@" </dev/null ||
+        die "could not prepare volume $volume"
+}

@@ -33,7 +33,7 @@ while [[ -L "$entry" ]]; do
     [[ "$entry" == /* ]] || entry="$entry_dir/$entry"
 done
 root="$(cd -P -- "$(dirname -- "$entry")/.." && pwd -P)"
-for lib in common protect git-guard memory report lock engram tools github podman; do
+for lib in common protect git-guard memory report lock engram tools github gradle podman; do
     [[ -f "$root/lib/$lib.sh" ]] || { echo "agent: $root/lib/$lib.sh not found" >&2; exit 1; }
     # shellcheck source=/dev/null
     . "$root/lib/$lib.sh"
@@ -274,6 +274,17 @@ memory_unlock "$tools_lock"
 tool_mounts "$name"
 abort_if_signalled
 
+# The agent's own Gradle state (lib/gradle.sh), in a volume per agent and
+# workspace.
+GRADLE_STATE_MOUNTS=""
+find_gradle_state "$ws" "$tmp"
+if [[ ${#GRADLE_STATE[@]} -gt 0 ]]; then
+    state_volume="$(gradle_state_volume "$name" "$ws")"
+    prepare_gradle_state "localhost/agent-run-$name" "$state_volume" "${GRADLE_STATE[@]}"
+    gradle_state_mounts "$state_volume" "$ws" "${GRADLE_STATE[@]}"
+fi
+abort_if_signalled
+
 memory_lock "$lock_dir" 600
 abort_if_signalled
 quarantine before || die "could not check memory (is the image built? podman compose build $name)"
@@ -295,7 +306,7 @@ abort_if_signalled
 complete=true
 report_snapshot "$ws" "$tmp" || complete=false
 abort_if_signalled
-compose "$root" "$ws" --podman-run-args "$AGENT_RUN_ARGS $TOOL_MOUNTS" \
+compose "$root" "$ws" --podman-run-args "$AGENT_RUN_ARGS $TOOL_MOUNTS$GRADLE_STATE_MOUNTS" \
     run --rm --no-deps --name "$cname" \
     -v "$ws/.git:$ws/.git:ro,z" \
     ${protect_mounts[@]+"${protect_mounts[@]}"} \

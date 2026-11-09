@@ -23,6 +23,7 @@ limits what it can reach and what it can leave behind for the host to run.
 | `lib/engram.sh` | Engram detection and validation. |
 | `lib/tools.sh` | Build tools: the install container and the agent's tool mounts. |
 | `lib/github.sh` | Checks the GitHub relay's repository list. |
+| `lib/gradle.sh` | Finds the Gradle state folders the agent gets its own copy of. |
 | `lib/report.sh` | Snapshot and post-run report. |
 | `lib/podman.sh` | Rootless check, `compose`, container naming and cleanup. The only library that calls Podman. |
 | `tests/` | `run.sh` and `unit/` (no Podman), `integration.sh` (needs the Podman machine). |
@@ -113,6 +114,15 @@ repositories, never mounted in an agent), and `instructions.md`.
   downloaded. Pi has no MCP: it gets `browser` (playwright-core over CDP to
   one Chromium per container, same settings) and the `browser` skill, mounted
   read-only by `bin/agent` like the instructions.
+- **Gradle state:** `.gradle` and `.kotlin` next to each settings script and
+  `build` next to each build script (found at launch) are covered by subpaths
+  of a volume per agent and workspace (`agent-run-<agent>-build-<hash>`). The
+  host's Gradle and IDE load these folders, so agents can't plant outputs
+  there, and builds on the host and in the container never share them: Gradle
+  coordinates builds through file locks and a localhost ping, which don't
+  cross the VM. Missing folders are covered too (Podman leaves empty mount
+  points on the host); a symlink or file in their place is refused. Modules
+  created during a run aren't covered until the next launch.
 - **Memory limit:** `AGENT_MEMORY` sets the container limit and nothing else;
   `bin/agent` prints it at launch.
 - **Instructions:** `~/.agent-run/instructions.md` is copied into the temp
@@ -145,6 +155,7 @@ repositories, never mounted in an agent), and `instructions.md`.
 
 - Agents never see or change an existing `.signing` or `local.properties`,
   and never change an existing `.idea`, including through hard links.
+- Agents never write to the host's Gradle state folders found at launch.
 - Host Git never loads hooks or includes from agent-writable files, in the
   workspace or the memory repository. For command settings this is best
   effort; don't widen that claim.
@@ -183,6 +194,9 @@ repositories, never mounted in an agent), and `instructions.md`.
 - With `--userns keep-id`, Podman's read-only tmpfs covers a `/tmp` volume;
   hence `--read-only-tmpfs=false` and an explicit `/dev/shm`.
 - Rootful Podman ignores `--userns keep-id`, which is why rootful is refused.
+- Podman mounts a volume `subpath` only if it exists, so a helper container
+  creates them first. podman-compose splits `--podman-run-args` with `shlex`,
+  so mounts with workspace paths are single-quoted.
 - A missing bind-mount source is an error, so conditional mounts are added in
   `bin/agent`, not `compose.yaml`.
 - Bash defers traps while a foreground child runs: Compose runs in the
