@@ -31,6 +31,13 @@ x-agent: &agent
     # Versions are pinned at build time (agents/<agent>/package-lock.json);
     # Claude Code's own updater would bypass the pin.
     DISABLE_AUTOUPDATER: "1"
+    # The host terminal's identity, so CLIs render for it: Claude Code adapts
+    # to JetBrains terminals by TERMINAL_EMULATOR, and Podman would set TERM=xterm.
+    TERM: ${TERM:-xterm}
+    COLORTERM: ${COLORTERM:-}
+    TERM_PROGRAM: ${TERM_PROGRAM:-}
+    TERM_PROGRAM_VERSION: ${TERM_PROGRAM_VERSION:-}
+    TERMINAL_EMULATOR: ${TERMINAL_EMULATOR:-}
     # "proxy" resolves to the agent's own proxy, the only one on its network.
     HTTP_PROXY: http://proxy:3128
     HTTPS_PROXY: http://proxy:3128

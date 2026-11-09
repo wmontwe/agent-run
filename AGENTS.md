@@ -198,6 +198,9 @@ repositories, never mounted in an agent), and `instructions.md`.
   and can't read from GitHub over TLS 1.3, which is why the relay is nginx.
 - nginx treats `\\` in a quoted string as one backslash; the relay's regex uses
   `\x5c`. It also needs its temp paths under `/tmp` on a read-only root.
+- Podman sets `TERM=xterm` in a container, and CLIs detect the terminal from
+  its variables (Claude Code adapts to JetBrains terminals by
+  `TERMINAL_EMULATOR`), so `compose.yaml` passes the host's through.
 - Claude Code needs its postinstall script to put its binary in place; the
   `Dockerfile` does that step itself. Remove it once Claude Code works with
   `--ignore-scripts`.

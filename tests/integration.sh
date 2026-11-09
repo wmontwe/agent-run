@@ -44,7 +44,8 @@ fresh() {
     HOME_DIR="$S/home" WS="$S/ws" MEM="$S/home/.agent-run/memory"
 }
 run_agent() {
-    HOME="$HOME_DIR" WORKSPACE="$WS" /bin/bash "$agent" claude "$@" </dev/null
+    HOME="$HOME_DIR" WORKSPACE="$WS" TERM=xterm-256color TERMINAL_EMULATOR=JetBrains-JediTerm \
+        /bin/bash "$agent" claude "$@" </dev/null
 }
 # value KEY: the KEY=... line the probe printed.
 value() {
@@ -63,6 +64,7 @@ git_config_sum="$(shasum "$WS/.git/config")"
 status=0
 run_agent bash -c '
     echo "pwd=$PWD"
+    echo "term=$TERM $TERMINAL_EMULATOR"
     w() { if eval "$1" 2>/dev/null; then echo "$2=writable"; else echo "$2=blocked"; fi; }
     w "git config core.fsmonitor x" git_config
     w "touch .git/hooks/x" git_hooks
@@ -83,6 +85,7 @@ run_agent bash -c '
     exit 3' >"$S/out" 2>&1 || status=$?
 check "exit code passes through" 3 "$status"
 check "workspace at its host path" "$WS" "$(value pwd)"
+check "host terminal passed through" "xterm-256color JetBrains-JediTerm" "$(value term)"
 check ".git config read-only" blocked "$(value git_config)"
 check ".git hooks read-only" blocked "$(value git_hooks)"
 check ".git can't be moved" blocked "$(value git_mv)"
