@@ -216,7 +216,16 @@ if [[ $ENGRAM == true ]]; then
 fi
 # sources: launcher root, knowledge (read-only), memory, the agent's home.
 writable=("$ws" "$mem" "${sources[3]}" ${extra_writable[@]+"${extra_writable[@]}"})
-check_hard_links "$tmp" "${#writable[@]}" "${writable[@]}" "${protected[@]}"
+# The agent's own Gradle state (lib/gradle.sh) covers these folders, so the
+# host's copies, where host builds may leave links (a local clone in build/),
+# are out of its reach.
+find_gradle_state "$ws" "$tmp"
+covered=()
+for path in ${GRADLE_STATE[@]+"${GRADLE_STATE[@]}"}; do
+    covered+=("$ws/$path")
+done
+check_hard_links "$tmp" "${#writable[@]}" "${#covered[@]}" "${writable[@]}" \
+    ${covered[@]+"${covered[@]}"} "${protected[@]}"
 
 new_container_name "$name"
 cname="$CONTAINER_NAME"
@@ -268,18 +277,18 @@ compose "$root" "$ws" up -d proxy-tools >/dev/null || die "could not start proxy
 tools_lock="$HOME/.agent-run/tools-$name.lock"
 memory_lock "$tools_lock" 1800
 abort_if_signalled
-install_tools "localhost/agent-run-$name" "$name" "$tmp/tools" "$licenses" ||
+gradle_home="$(workspace_volume "$name" gradle "$ws")"
+install_tools "localhost/agent-run-$name" "$name" "$tmp/tools" "$licenses" "$gradle_home" ||
     die "could not install the project's tools (see above)"
 memory_unlock "$tools_lock"
-tool_mounts "$name"
+tool_mounts "$name" "$gradle_home"
 abort_if_signalled
 
-# The agent's own Gradle state (lib/gradle.sh), in a volume per agent and
+# The agent's own Gradle state, found above, in a volume per agent and
 # workspace.
 GRADLE_STATE_MOUNTS=""
-find_gradle_state "$ws" "$tmp"
 if [[ ${#GRADLE_STATE[@]} -gt 0 ]]; then
-    state_volume="$(gradle_state_volume "$name" "$ws")"
+    state_volume="$(workspace_volume "$name" build "$ws")"
     prepare_gradle_state "localhost/agent-run-$name" "$state_volume" "${GRADLE_STATE[@]}"
     gradle_state_mounts "$state_volume" "$ws" "${GRADLE_STATE[@]}"
 fi

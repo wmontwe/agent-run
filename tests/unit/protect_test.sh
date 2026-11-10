@@ -107,7 +107,7 @@ hard_links() {
     [[ -d "$T/mem/.git" ]] && protected+=("$T/mem/.git")
     [[ -f "$T/mem/.gitignore" ]] && protected+=("$T/mem/.gitignore")
     mkdir -p "$T/tmp" "$T/agent-home"
-    check_hard_links "$T/tmp" 3 "$T/ws" "$T/mem" "$T/agent-home" "${protected[@]}"
+    check_hard_links "$T/tmp" 3 0 "$T/ws" "$T/mem" "$T/agent-home" "${protected[@]}"
 }
 
 setup_hard_links() {
@@ -172,6 +172,29 @@ test_hard_links_local_clone_allowed() {
     mkdir mem
     [[ -n "$(find ws/.git -type f -links +1 -print -quit)" ]] || fail "expected linked objects"
     assert_ok hard_links
+}
+
+# A local clone inside the workspace, as a host build may leave in build/:
+# its Git objects are hard links to the workspace's.
+setup_clone_in_build() {
+    setup_hard_links
+    local i
+    for i in $(seq 1 60); do echo "$i" >"ws/f$i"; done
+    g -C ws add . && g -C ws commit -qm init
+    mkdir -p ws/build/tmp
+    git clone -q --local ws ws/build/tmp/clone
+}
+
+test_hard_links_clone_in_workspace_named() {
+    setup_clone_in_build
+    assert_dies "is hard-linked" hard_links
+}
+
+test_hard_links_covered_folder_skipped() {
+    setup_clone_in_build
+    mkdir -p tmp agent-home
+    assert_ok check_hard_links "$T/tmp" 3 1 "$T/ws" "$T/mem" "$T/agent-home" "$T/ws/build" \
+        "$T/ws/.git" "$T/ws/.idea" "$T/ws/.signing"
 }
 
 test_check_no_symlink_path() {

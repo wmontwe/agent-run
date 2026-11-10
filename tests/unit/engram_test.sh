@@ -118,10 +118,10 @@ test_hard_links_engram_package_and_memory() {
     # Notes inside the writable .memory may share inodes with each other.
     echo n >engram-work/projects/p/.memory/a.md
     ln engram-work/projects/p/.memory/a.md engram-work/projects/p/.memory/b.md
-    assert_ok check_hard_links "$T/tmp" 4 "${writable[@]}" "${protected[@]}"
+    assert_ok check_hard_links "$T/tmp" 4 0 "${writable[@]}" "${protected[@]}"
     # The read-only package linked into its own writable .memory is not.
     ln engram-work/projects/p/AGENTS.md engram-work/projects/p/.memory/agents.md
-    assert_dies "projects/p/AGENTS.md is hard-linked" check_hard_links "$T/tmp" 4 "${writable[@]}" "${protected[@]}"
+    assert_dies "projects/p/AGENTS.md is hard-linked" check_hard_links "$T/tmp" 4 0 "${writable[@]}" "${protected[@]}"
 }
 
 test_empty_gitkeep_kept_others_quarantined() {

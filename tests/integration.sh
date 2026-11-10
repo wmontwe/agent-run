@@ -11,7 +11,18 @@ set -euo pipefail
 here="$(cd -P -- "$(dirname -- "$0")" && pwd -P)"
 agent="$here/../bin/agent"
 scratch="$(cd -P -- "$(mktemp -d "${TMPDIR:-/tmp}/agent-run-it.XXXXXX")" && pwd -P)"
-trap 'chmod -R u+rwx "$scratch" 2>/dev/null; rm -rf -- "$scratch"' EXIT
+# Each scratch workspace gets its own build and Gradle home volumes.
+cleanup() {
+    local ws id
+    for ws in "$scratch"/*/ws; do
+        [[ -d "$ws" ]] || continue
+        id="$(printf '%s' "$ws" | shasum | cut -c1-12)"
+        podman volume rm -f "agent-run-claude-build-$id" "agent-run-claude-gradle-$id" >/dev/null 2>&1 || true
+    done
+    chmod -R u+rwx "$scratch" 2>/dev/null
+    rm -rf -- "$scratch"
+}
+trap cleanup EXIT
 
 # A scratch HOME hides Podman's connection settings, so pass the rootless one.
 connection="$(podman system connection list --format '{{.Name}} {{.URI}} {{.Identity}}' |
@@ -52,7 +63,12 @@ value() {
     sed -n "s/^$1=//p" "$S/out" | tr -d '\r' | head -1
 }
 
-volumes_before="$(podman volume ls -q | wc -l | tr -d ' ')"
+# Volumes other than the per-workspace ones (agent-run-claude-build-*,
+# agent-run-claude-gradle-*), which every run creates for its scratch workspace.
+other_volumes() {
+    podman volume ls -q | grep -cvE '^agent-run-claude-(build|gradle)-[0-9a-f]{12}$' || true
+}
+volumes_before="$(other_volumes)"
 
 echo "isolation, mounts and network"
 fresh probe
@@ -325,7 +341,7 @@ wait "$pid" || status=$?
 check "TERM before the container exists exits 143" 143 "$status"
 check "and doesn't run the agent" yes "$([[ $(( $(date +%s) - start )) -lt 30 ]] && echo yes || echo no)"
 check "no container left after early TERM" "" "$(podman ps -a --format '{{.Names}}' | grep -E "^agent-run-claude-$pid-" || true)"
-check "no volumes left" "$volumes_before" "$(podman volume ls -q | wc -l | tr -d ' ')"
+check "no volumes left" "$volumes_before" "$(other_volumes)"
 
 echo "proxy"
 # 1.1.1.1's PTR record is one.one.one.one. With that name allowed, a CONNECT

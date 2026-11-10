@@ -32,7 +32,8 @@ RUN apt-get update \
 # hand from the release's SHASUMS256.txt). bin/agent installs a project's
 # tools with it in a separate container into a per-agent volume at /mise,
 # which agent containers get read-only; the shims put the tools on PATH, and
-# nothing installs at run time. /android and ~/.gradle are per-agent volumes too.
+# nothing installs at run time. /android is a per-agent volume too, ~/.gradle
+# one per agent and workspace.
 ARG MISE_VERSION=2026.9.12
 ARG MISE_SHA256_ARM64=e4a0921da0a76ce4666832d5b57b6f0eb9f22d149ba92845ebae4c38638c6775
 ARG MISE_SHA256_X64=b4058dece685259910d3aba5782445996eea79dbdb3cf952a6eb81aadf0373ff

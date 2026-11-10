@@ -7,7 +7,8 @@
 # container copies the user's accepted Android SDK licenses into
 # agent-run-<agent>-android (/android; the Android Gradle Plugin downloads SDK
 # packages itself) and lets the project's Gradle wrapper download its
-# distribution into agent-run-<agent>-gradle (~/.gradle). Java, Kotlin and
+# distribution into the agent's Gradle home for the workspace (~/.gradle,
+# lib/gradle.sh). Java, Kotlin and
 # Gradle settings are the project's; nothing here configures them.
 
 # The proxy for every JVM, Gradle's daemons and test workers included: Java
@@ -90,18 +91,18 @@ if [ -d /licenses ]; then
 fi
 '
 
-# install_tools IMAGE AGENT CONFIG_DIR LICENSES: runs the install
+# install_tools IMAGE AGENT CONFIG_DIR LICENSES GRADLE_HOME: runs the install
 # container (see above). LICENSES is a host folder of accepted Android SDK
-# licenses, or empty. Fails if the install fails.
+# licenses, or empty. GRADLE_HOME is the volume of the agent's Gradle home for
+# the workspace. Fails if the install fails.
 install_tools() {
-    local image="$1" agent="$2" config="$3" licenses="$4" volume
-    for volume in mise android gradle; do
-        podman volume exists "agent-run-$agent-$volume" ||
-            podman volume create "agent-run-$agent-$volume" >/dev/null ||
-            die "could not create volume agent-run-$agent-$volume"
+    local image="$1" agent="$2" config="$3" licenses="$4" gradle_home="$5" volume
+    for volume in "agent-run-$agent-mise" "agent-run-$agent-android" "$gradle_home"; do
+        podman volume exists "$volume" || podman volume create "$volume" >/dev/null ||
+            die "could not create volume $volume"
     done
     local mounts=(-v "agent-run-$agent-mise:/mise" -v "agent-run-$agent-android:/android"
-        -v "agent-run-$agent-gradle:/gradle" -v "$config:/project:ro,z")
+        -v "$gradle_home:/gradle" -v "$config:/project:ro,z")
     [[ -z "$licenses" ]] || mounts+=(-v "$licenses:/licenses:ro,z")
     podman run --rm --network agent-run_tools --read-only --cap-drop ALL \
         --security-opt no-new-privileges --userns keep-id:uid=1000,gid=1000 \
@@ -111,12 +112,13 @@ install_tools() {
         "${mounts[@]}" --entrypoint bash "$image" -c "$TOOLS_INSTALL_SCRIPT" install "$agent" </dev/null
 }
 
-# tool_mounts AGENT: sets TOOL_MOUNTS to the agent container's mounts of the
-# three volumes, as `podman run` arguments in one string; the tools are
-# read-only. They go through --podman-run-args, because podman-compose
-# prefixes the names of volumes given to `run -v` with the project name.
+# tool_mounts AGENT GRADLE_HOME: sets TOOL_MOUNTS to the agent container's
+# mounts of the three volumes, as `podman run` arguments in one string; the
+# tools are read-only. They go through --podman-run-args, because
+# podman-compose prefixes the names of volumes given to `run -v` with the
+# project name.
 tool_mounts() {
     TOOL_MOUNTS="--mount type=volume,src=agent-run-$1-mise,dst=/mise,ro=true"
     TOOL_MOUNTS="$TOOL_MOUNTS --mount type=volume,src=agent-run-$1-android,dst=/android"
-    TOOL_MOUNTS="$TOOL_MOUNTS --mount type=volume,src=agent-run-$1-gradle,dst=/home/node/.gradle"
+    TOOL_MOUNTS="$TOOL_MOUNTS --mount type=volume,src=$2,dst=/home/node/.gradle"
 }

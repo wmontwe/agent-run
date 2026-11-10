@@ -72,7 +72,8 @@ repositories, never mounted in an agent), and `instructions.md`.
   kind of entry in their place is refused.
 - **Hard links:** protected files that share an inode with a file in a
   writable mount are refused before launch. Agents can't create such links,
-  since `link()` across mounts fails.
+  since `link()` across mounts fails. Folders covered by the agent's Gradle
+  state aren't scanned: the agent can't reach the host's copies.
 - **Memory:** before and after each run, everything that isn't a directory or
   a regular `.md`, `.jsonl` or empty `.gitkeep` file, or that has an unsafe
   name, is moved to quarantine. The quarantine runs in a sandbox container,
@@ -99,8 +100,12 @@ repositories, never mounted in an agent), and `instructions.md`.
   `mise install --locked`, lets the project's wrapper download its
   distribution (the jar runs only if it matches Gradle's published checksum
   for that version; the wrapper checks `distributionSha256Sum`), and copies
-  the host's Android SDK licenses. Results live in per-agent volumes: `/mise`
-  (read-only for the agent), `/android` and `~/.gradle`. Every JVM gets the
+  the host's Android SDK licenses. Results live in per-agent volumes, `/mise`
+  (read-only for the agent) and `/android`, and in `~/.gradle`, a volume per
+  agent and workspace (`agent-run-<agent>-gradle-<hash>`): builds load code
+  from it (init scripts, cached plugins and jars), so an agent can't plant
+  that for another workspace, and Gradle's lock release ping doesn't reach
+  another container. Every JVM gets the
   proxy through `JAVA_TOOL_OPTIONS`. On ARM64 the image has x86-64 runtime
   libraries, because Android's `aapt2` exists only for x86-64 and runs
   through the VM's QEMU.
@@ -229,6 +234,9 @@ repositories, never mounted in an agent), and `instructions.md`.
 
 - Bash 3.2 (macOS `/bin/bash`): no associative arrays, `mapfile`, `${var,,}`
   or `local -n`. `set -euo pipefail` in `bin/agent` and test runners only.
+- Under `pipefail`, no pipeline ends in a reader that stops early (`head`,
+  `grep -m`, `awk … exit`): the writer's SIGPIPE fails it, silently inside
+  `$(…)`. Write to a file and read that instead.
 - Libraries define functions and constants only. Functions take inputs as
   arguments; a function producing a list sets a documented output variable.
   Never call a function that may `die` inside `$(…)`.

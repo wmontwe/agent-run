@@ -35,12 +35,21 @@ test_find_gradle_state_refuses_unsafe_names() {
     assert_dies "unsupported characters" find_gradle_state "$T/ws" "$T"
 }
 
-test_gradle_state_volume() {
-    local a b
-    a="$(gradle_state_volume claude /p/one)"
-    b="$(gradle_state_volume claude /p/two)"
+test_workspace_volume() {
+    local a b c
+    a="$(workspace_volume claude build /p/one)"
+    b="$(workspace_volume claude build /p/two)"
+    c="$(workspace_volume claude gradle /p/one)"
     [[ "$a" == agent-run-claude-build-???????????? && "$a" != "$b" ]] || fail "$a $b"
-    assert_eq "$a" "$(gradle_state_volume claude /p/one)"
+    assert_eq "$a" "$(workspace_volume claude build /p/one)"
+    assert_eq "agent-run-claude-gradle-${a##*-}" "$c"
+}
+
+test_tool_mounts_gradle_home_per_workspace() {
+    tool_mounts claude agent-run-claude-gradle-0123456789ab
+    [[ "$TOOL_MOUNTS" == *"src=agent-run-claude-gradle-0123456789ab,dst=/home/node/.gradle"* ]] ||
+        fail "$TOOL_MOUNTS"
+    [[ "$TOOL_MOUNTS" == *"src=agent-run-claude-mise,dst=/mise,ro=true"* ]] || fail "$TOOL_MOUNTS"
 }
 
 # podman-compose splits the mounts with shlex; check they survive it.

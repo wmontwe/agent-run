@@ -102,42 +102,50 @@ trust_memory_repo() {
     git_dir_id "$1/.git" >"$2" || die "could not record $1/.git"
 }
 
-# check_hard_links TMP COUNT WRITABLE... PROTECTED...: a protected file that
-# shares its inode (a hard link) with a file in a writable mount (the
-# workspace, memory, the agent's home) could be changed, or read, through that
-# other name, whatever its own mount says. COUNT is the number of WRITABLE
-# folders that follow. Agents can't create such links across mounts (EXDEV),
-# so checking the existing ones before launch is enough. Links to files
-# outside the mounts, like a local clone's Git objects, are fine. PROTECTED
-# paths inside a writable folder are left out of its scan, and writable
-# folders inside a protected one (engram's .memory in its read-only package)
-# are left out of the protected scan.
+# check_hard_links TMP NWRITABLE NCOVERED WRITABLE... COVERED... PROTECTED...:
+# a protected file that shares its inode (a hard link) with a file in a
+# writable mount (the workspace, memory, the agent's home) could be changed,
+# or read, through that other name, whatever its own mount says. NWRITABLE and
+# NCOVERED count the WRITABLE and COVERED folders that follow. COVERED folders
+# lie in a writable one but are hidden from the agent by another mount (its
+# own Gradle state), so they aren't scanned. Agents can't create such links
+# across mounts (EXDEV), so checking the existing ones before launch is
+# enough. Links to files outside the mounts, like a local clone's Git
+# objects, are fine. PROTECTED paths inside a writable folder are left out of
+# its scan, and writable folders inside a protected one (engram's .memory in
+# its read-only package) are left out of the protected scan.
 check_hard_links() {
-    local tmp="$1" count="$2" root path shared name
-    shift 2
-    local writable=("${@:1:$count}")
-    shift "$count"
+    local tmp="$1" nwritable="$2" ncovered="$3" root path shared name
+    shift 3
+    local writable=("${@:1:$nwritable}")
+    shift "$nwritable"
+    local covered=()
+    [[ $ncovered -eq 0 ]] || covered=("${@:1:$ncovered}")
+    shift "$ncovered"
     local skip=()
     for root in "${writable[@]}"; do
         for path in "$@"; do
             [[ "$root" == "$path"/* ]] && skip+=(-path "$root" -prune -o)
         done
     done
-    find -P "$@" ${skip[@]+"${skip[@]}"} -type f -links +1 -exec stat -f '%d:%i' {} + \
-        >"$tmp/protected-inodes" || die "could not check protected files for hard links"
-    [[ -s "$tmp/protected-inodes" ]] || return 0
+    find -P "$@" ${skip[@]+"${skip[@]}"} -type f -links +1 -exec stat -f '%d:%i %N' {} + \
+        >"$tmp/protected-links" || die "could not check protected files for hard links"
+    [[ -s "$tmp/protected-links" ]] || return 0
     : >"$tmp/writable-inodes"
     for root in "${writable[@]}"; do
         local prune=()
-        for path in "$@"; do
+        for path in "$@" ${covered[@]+"${covered[@]}"}; do
             [[ "$path" == "$root"/* ]] && prune+=(-path "$path" -prune -o)
         done
         find -P "$root" ${prune[@]+"${prune[@]}"} -type f -links +1 -exec stat -f '%d:%i' {} + \
             >>"$tmp/writable-inodes" || die "could not check $root for hard links"
     done
-    shared="$(sort -u "$tmp/protected-inodes" | comm -12 - <(sort -u "$tmp/writable-inodes") | head -1)"
-    [[ -n "$shared" ]] || return 0
-    name="$(find -P "$@" ${skip[@]+"${skip[@]}"} -type f -links +1 -exec stat -f '%d:%i %N' {} + |
-        grep -m1 "^$shared " | cut -d' ' -f2-)"
+    # Through files only: a reader that stops early (head, grep -m1) would end
+    # the pipeline with SIGPIPE, which pipefail turns into a silent exit.
+    cut -d' ' -f1 "$tmp/protected-links" | sort -u >"$tmp/protected-inodes"
+    sort -u "$tmp/writable-inodes" | comm -12 "$tmp/protected-inodes" - >"$tmp/shared-inodes"
+    [[ -s "$tmp/shared-inodes" ]] || return 0
+    read -r shared <"$tmp/shared-inodes"
+    name="$(awk -v id="$shared" '$1 == id { sub(/^[^ ]* /, ""); print; exit }' "$tmp/protected-links")"
     die "$(printf '%q' "$name") is hard-linked to a file in a writable folder (workspace, memory or the agent's home), so an agent could change or read it there; replace the link with a copy"
 }

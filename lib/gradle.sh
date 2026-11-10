@@ -34,10 +34,15 @@ find_gradle_state() {
     done < <(sort -zu "$tmp/gradle-state")
 }
 
-# gradle_state_volume AGENT WS: prints the volume holding AGENT's Gradle state
-# for WS, so incremental builds survive between runs.
-gradle_state_volume() {
-    printf 'agent-run-%s-build-%s' "$1" "$(printf '%s' "$2" | shasum | cut -c1-12)"
+# workspace_volume AGENT KIND WS: prints the name of AGENT's KIND volume for
+# WS, kept between runs: "build" holds the Gradle state above, so incremental
+# builds survive; "gradle" is the Gradle home (~/.gradle). Builds load code
+# from it (init scripts, cached plugins and jars), so an agent working on one
+# workspace mustn't plant it for another. Sharing would also block concurrent
+# builds: Gradle releases its locks through a localhost ping, which doesn't
+# reach another container.
+workspace_volume() {
+    printf 'agent-run-%s-%s-%s' "$1" "$2" "$(printf '%s' "$3" | shasum | cut -c1-12)"
 }
 
 # gradle_state_mounts VOLUME WS PATHS...: sets GRADLE_STATE_MOUNTS to the
