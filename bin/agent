@@ -12,13 +12,22 @@ set -euo pipefail
 usage() {
     echo "usage: agent claude|codex|gemini|pi [command...]" >&2
     echo "       agent trust-memory    record ~/.agent-run/memory/.git as yours" >&2
+    echo "       agent trust-tools     approve this workspace's mise config for install" >&2
+    echo "       agent refresh-tools claude|codex|gemini|pi" >&2
+    echo "                             remove the agent's installed tools and Gradle" >&2
+    echo "                             distributions; the next launch installs them again" >&2
     exit 2
 }
 
 [[ $# -ge 1 ]] || usage
+command=run
 case "$1" in
     claude|codex|gemini|pi) name="$1"; shift ;;
-    trust-memory) name="" ;;
+    trust-memory|trust-tools) [[ $# -eq 1 ]] || usage; command="$1"; name="" ;;
+    refresh-tools)
+        [[ $# -eq 2 ]] || usage
+        case "$2" in claude|codex|gemini|pi) ;; *) usage ;; esac
+        command="$1"; name="$2" ;;
     *) usage ;;
 esac
 
@@ -42,12 +51,42 @@ done
 
 # Memory's .git is only trusted with this record, which no container can reach.
 memory_marker="$HOME/.agent-run/memory.git-id"
-if [[ -z "$name" ]]; then
-    mem="$(canonical "$HOME/.agent-run/memory")" || die "missing $HOME/.agent-run/memory"
-    trust_memory_repo "$mem" "$memory_marker"
-    echo "Recorded $mem/.git as your memory repository."
-    exit 0
-fi
+# Approved mise configs (agent trust-tools), one record per workspace, where no
+# container can reach them.
+tools_trust_dir="$HOME/.agent-run/tools-trust"
+case "$command" in
+    trust-memory)
+        mem="$(canonical "$HOME/.agent-run/memory")" || die "missing $HOME/.agent-run/memory"
+        trust_memory_repo "$mem" "$memory_marker"
+        echo "Recorded $mem/.git as your memory repository."
+        exit 0 ;;
+    trust-tools)
+        ws="$(canonical "${WORKSPACE:-$PWD}")" || die "workspace is not a directory: ${WORKSPACE:-$PWD}"
+        require_git_dir "$ws"
+        tmp="$(mktemp -d "${TMPDIR:-/tmp}/agent-run.XXXXXX")"
+        trap 'rm -rf -- "$tmp"' EXIT
+        # The copies are what gets approved, as at launch.
+        copy_tool_config "$ws" "$tmp"
+        case "$TOOL_CONFIG" in
+            none) die "$ws has no mise.toml or .mise.toml" ;;
+            unlocked) die "$ws has no mise.lock; run there first: mise lock --platform linux-arm64,macos-arm64" ;;
+        esac
+        trust_tool_config "$tmp" "$tools_trust_dir/$(workspace_id "$ws")" "$ws"
+        approved=""
+        for file in mise.toml .mise.toml mise.lock; do
+            if [[ -f "$tmp/$file" ]]; then approved="$approved $file"; fi
+        done
+        echo "Approved$approved in $ws for install."
+        exit 0 ;;
+    refresh-tools)
+        require_rootless
+        tools_lock="$HOME/.agent-run/tools-$name.lock"
+        memory_lock "$tools_lock" 1800
+        trap 'memory_unlock "$tools_lock"' EXIT
+        remove_tool_volumes "$name"
+        echo "Removed $name's tools and Gradle distributions; the next launch installs them again."
+        exit 0 ;;
+esac
 
 # Signing material is hidden: an existing directory is covered by an empty
 # read-only one. IDE configuration stays readable but is mounted read-only,
@@ -264,8 +303,14 @@ quarantine() {
 # lock, since two runs of one agent share the volumes.
 cd -- "$root"
 copy_tool_config "$ws" "$tmp/tools"
+# mise runs commands from its config, which agents can edit, so only an
+# approved one is installed (agent trust-tools).
 if [[ $TOOL_CONFIG == unlocked ]]; then
     echo "agent: $ws has a mise config but no mise.lock, so its tools are not installed; on the host run: mise lock --platform linux-arm64,macos-arm64" >&2
+    rm -f -- "$tmp/tools/mise.toml" "$tmp/tools/.mise.toml" "$tmp/tools/mise.lock"
+elif [[ $TOOL_CONFIG == locked ]] &&
+    ! tool_config_trusted "$tmp/tools" "$tools_trust_dir/$(workspace_id "$ws")"; then
+    echo "agent: the mise config in $ws is new or changed since you approved it, so its tools are not installed; review mise.toml and mise.lock, then run there: agent trust-tools" >&2
     rm -f -- "$tmp/tools/mise.toml" "$tmp/tools/.mise.toml" "$tmp/tools/mise.lock"
 fi
 licenses=""
@@ -313,7 +358,7 @@ export AGENT_MEMORY="${AGENT_MEMORY:-4g}"
 echo "agent: starting $name in $ws with a memory limit of $AGENT_MEMORY (AGENT_MEMORY)" >&2
 abort_if_signalled
 complete=true
-report_snapshot "$ws" "$tmp" || complete=false
+report_snapshot "$ws" "$tmp" ${covered[@]+"${covered[@]}"} || complete=false
 abort_if_signalled
 compose "$root" "$ws" --podman-run-args "$AGENT_RUN_ARGS $TOOL_MOUNTS$GRADLE_STATE_MOUNTS" \
     run --rm --no-deps --name "$cname" \

@@ -33,20 +33,31 @@ is_sensitive() {
     return 1
 }
 
-# list_paths WS TESTS...: prints NUL-delimited paths below WS matching the find
-# TESTS, skipping the protected top-level .git. Fails if find fails.
+# list_paths WS TMP TESTS...: prints NUL-delimited paths below WS matching the
+# find TESTS, skipping the protected top-level .git and the folders
+# report_snapshot recorded as covered. Fails if find fails.
 list_paths() {
-    local ws="$1"
-    shift
-    find -P "$ws" -path "$ws/.git" -prune -o "$@" -print0
+    local ws="$1" tmp="$2" path prune=()
+    shift 2
+    if [[ -f "$tmp/covered" ]]; then
+        while IFS= read -r -d '' path; do
+            prune+=(-path "$path" -prune -o)
+        done <"$tmp/covered"
+    fi
+    find -P "$ws" -path "$ws/.git" -prune -o ${prune[@]+"${prune[@]}"} "$@" -print0
 }
 
-# report_snapshot WS TMP: records the sensitive paths that exist now, so
-# deletions can be reported, then the start time. Fails if find fails.
+# report_snapshot WS TMP [COVERED...]: records the sensitive paths that exist
+# now, so deletions can be reported, then the start time. COVERED folders are
+# hidden from the agent by its own mounts (its Gradle state), so whatever
+# changes there is the host's: both scans skip them. Fails if find fails.
 report_snapshot() {
-    local rc=0
-    list_paths "$1" "${SENSITIVE_TESTS[@]}" >"$2/before" || rc=$?
-    : >"$2/start"
+    local ws="$1" tmp="$2" rc=0
+    shift 2
+    : >"$tmp/covered"
+    [[ $# -eq 0 ]] || printf '%s\0' "$@" >"$tmp/covered"
+    list_paths "$ws" "$tmp" "${SENSITIVE_TESTS[@]}" >"$tmp/before" || rc=$?
+    : >"$tmp/start"
     return $rc
 }
 
@@ -57,7 +68,7 @@ report_snapshot() {
 report_print() {
     local ws="$1" tmp="$2" complete="$3" mem_repo="$4" mem="$5" path others=0
     : >"$tmp/nested" && : >"$tmp/changed" && : >"$tmp/deleted"
-    list_paths "$ws" \( -name .git -print0 -prune \) -o -cnewer "$tmp/start" \
+    list_paths "$ws" "$tmp" \( -name .git -print0 -prune \) -o -cnewer "$tmp/start" \
         >"$tmp/scan" || complete=false
     while IFS= read -r -d '' path; do
         if [[ "${path##*/}" == .git ]]; then

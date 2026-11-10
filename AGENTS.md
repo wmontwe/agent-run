@@ -21,7 +21,7 @@ limits what it can reach and what it can leave behind for the host to run.
 | `lib/memory.sh` | Memory quarantine. |
 | `lib/lock.sh` | The memory lock. |
 | `lib/engram.sh` | Engram detection and validation. |
-| `lib/tools.sh` | Build tools: the install container and the agent's tool mounts. |
+| `lib/tools.sh` | Build tools: approved mise configs, the install and copy containers, and the agent's tool mounts. |
 | `lib/github.sh` | Checks the GitHub relay's repository list. |
 | `lib/gradle.sh` | Finds the Gradle state folders the agent gets its own copy of. |
 | `lib/report.sh` | Snapshot and post-run report. |
@@ -37,7 +37,8 @@ limits what it can reach and what it can leave behind for the host to run.
 Host state is under `~/.agent-run/`: `knowledge/` (read-only `/knowledge`),
 `memory/` (read-write `/memory`, shared by all agents), `<agent>/home/`
 (`/home/node`), `quarantine/` (never mounted), `github-repos.txt` (the relay's
-repositories, never mounted in an agent), and `instructions.md`.
+repositories, never mounted in an agent), `tools-trust/` (approved mise
+configs, never mounted), and `instructions.md`.
 
 ## Architecture
 
@@ -96,17 +97,26 @@ repositories, never mounted in an agent), and `instructions.md`.
   Gradle, Kotlin, JVM settings); agent-run only provides them. Before the
   agent starts, an install container (agent image, read-only, no
   capabilities, network only through `proxy-tools`) gets copies of the
-  project's mise files and Gradle wrapper, never the workspace. It runs
-  `mise install --locked`, lets the project's wrapper download its
-  distribution (the jar runs only if it matches Gradle's published checksum
-  for that version; the wrapper checks `distributionSha256Sum`), and copies
-  the host's Android SDK licenses. Results live in per-agent volumes, `/mise`
-  (read-only for the agent) and `/android`, and in `~/.gradle`, a volume per
-  agent and workspace (`agent-run-<agent>-gradle-<hash>`): builds load code
-  from it (init scripts, cached plugins and jars), so an agent can't plant
-  that for another workspace, and Gradle's lock release ping doesn't reach
-  another container. Every JVM gets the
-  proxy through `JAVA_TOOL_OPTIONS`. On ARM64 the image has x86-64 runtime
+  project's mise files and wrapper properties, never the workspace. It runs
+  `mise install --locked`, but only for mise files whose digest matches the
+  user's `agent trust-tools` record: mise runs commands from its config
+  (hooks, `exec` templates), which agents can edit. It downloads the Gradle
+  distribution the wrapper names, only from
+  `services.gradle.org/distributions/`, checks it against the checksum Gradle
+  publishes next to it, and unpacks it into `agent-run-<agent>-dists`, which
+  no agent mounts, in the wrapper's layout (`<name>/<base-36 MD5 of the
+  URL>/`, with a `.ok` marker). It also copies the host's Android SDK
+  licenses. Nothing from the project runs there: no wrapper jar, no Java. A
+  second container, without network and with the cache read-only, copies the
+  distribution into the agent's `~/.gradle` unless one is there. That home is
+  agent-writable, so no container that installs anything reads it. Results live in
+  per-agent volumes, `/mise` (read-only for the agent) and `/android`, and in
+  `~/.gradle`, a volume per agent and workspace
+  (`agent-run-<agent>-gradle-<hash>`): builds load code from it (init
+  scripts, cached plugins and jars), so an agent can't plant that for another
+  workspace, and Gradle's lock release ping doesn't reach another container.
+  `agent refresh-tools <agent>` removes the mise and distribution volumes.
+  Every JVM gets the proxy through `JAVA_TOOL_OPTIONS`. On ARM64 the image has x86-64 runtime
   libraries, because Android's `aapt2` exists only for x86-64 and runs
   through the VM's QEMU.
 - **Display and browser:** the entrypoint starts Xvfb on `:99` without a TCP
@@ -180,6 +190,10 @@ repositories, never mounted in an agent), and `instructions.md`.
   `api.github.com`, and never turns off certificate verification.
 - Tools are installed only from a lockfile or checksum; the tool volume is
   read-only for agents.
+- Containers with write access to shared tool volumes (`/mise`, `/android`,
+  the distribution cache) or network never run code or config an agent can
+  write: mise configs only as approved by `agent trust-tools`, Gradle
+  distributions only Gradle's own, verified.
 - agent-run never configures the project's runtimes or build settings.
 - Workspace files can't influence the launch: keep `--env-file /dev/null` and
   the `cd` to the launcher root.
@@ -228,15 +242,20 @@ repositories, never mounted in an agent), and `instructions.md`.
   "Picked up JAVA_TOOL_OPTIONS" line on stderr.
 - Gradle distributions on `services.gradle.org` redirect to GitHub, which
   agents can't reach, so the install container downloads them. Gradle
-  publishes wrapper jar checksums (on `downloads.gradle.org`) but not the jars.
+  publishes each one's SHA-256 at the same URL plus `.sha256`.
+- The Gradle wrapper uses an unpacked distribution without downloading or
+  checking it when its folder has the `<zip name>.ok` marker, so whatever
+  writes that folder decides what the wrapper runs.
+- `mise install` renders `exec(...)` templates in `[env]` and runs `[hooks]`
+  of a trusted config (`MISE_TRUSTED_CONFIG_PATHS`).
 
 ## Conventions
 
 - Bash 3.2 (macOS `/bin/bash`): no associative arrays, `mapfile`, `${var,,}`
   or `local -n`. `set -euo pipefail` in `bin/agent` and test runners only.
-- Under `pipefail`, no pipeline ends in a reader that stops early (`head`,
-  `grep -m`, `awk … exit`): the writer's SIGPIPE fails it, silently inside
-  `$(…)`. Write to a file and read that instead.
+- In `bin/agent` and `lib/`, no pipeline ends in a reader that stops early
+  (`head`, `grep -m`, `awk … exit`): under `pipefail` the writer's SIGPIPE
+  fails it, silently inside `$(…)`. Write to a file and read that instead.
 - Libraries define functions and constants only. Functions take inputs as
   arguments; a function producing a list sets a documented output variable.
   Never call a function that may `die` inside `$(…)`.

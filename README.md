@@ -93,14 +93,21 @@ agent trust-memory
 ## Builds
 
 Agents can build Gradle and Android projects. A project's tools come from its
-`mise.toml`, which needs a `mise.lock` covering Linux. Create it on the host:
+`mise.toml`, which needs a `mise.lock` covering Linux. mise runs commands from
+its config, and agents can edit it, so a config is installed only after you
+review and approve it. Create the lock and approve the config on the host, in
+the project, and again after every change to either file:
 
 ```sh
 mise lock --platform linux-arm64,macos-arm64
+agent trust-tools
 ```
 
-Tools, the Gradle cache and the Android SDK are kept per agent in Podman
-volumes, so only the first build downloads them. Android SDK licenses are
+Tools and the Android SDK are kept per agent in Podman volumes, so only the
+first build downloads them. The Gradle distribution your wrapper names is
+installed for it too, if it's one of Gradle's own (`services.gradle.org`).
+`agent refresh-tools claude` removes an agent's tools and Gradle distributions,
+and the next launch installs them again. Android SDK licenses are
 taken from `~/Library/Android/sdk/licenses` (or `$ANDROID_HOME`). Large builds
 need more memory than the default 4 GB per agent (the launcher prints the
 limit at start), and a Podman machine to match:
@@ -119,8 +126,11 @@ change what your Gradle and IDE load. You don't see what agents build, so ask
 them to copy outputs you need, like an APK, outside `build`. Their state is kept
 per agent and project in `agent-run-<agent>-build-*` volumes, and their Gradle
 home (`~/.gradle`, with downloaded dependencies) in `agent-run-<agent>-gradle-*`
-volumes, so agents can build different projects at the same time. Remove stale
-ones with `podman volume rm`.
+volumes, so agents can build different projects at the same time, and can't
+plant code for each other's builds. Two runs of one agent in the same project
+share both, so their Gradle builds can block each other. Remove stale volumes
+with `podman volume rm`, including `agent-run-<agent>-gradle` (no suffix),
+which earlier versions shared across projects.
 
 ## Screenshots and the browser
 

@@ -49,8 +49,7 @@ x-agent: &agent
     NODE_USE_ENV_PROXY: "1"
     MISE_TRUSTED_CONFIG_PATHS: ${WORKSPACE:-/workspace}
     # Java ignores the variables above; every JVM reads this one, Gradle's
-    # daemons and test workers included. Same as JAVA_PROXY_OPTIONS in
-    # lib/tools.sh.
+    # daemons and test workers included.
     JAVA_TOOL_OPTIONS: -Dhttp.proxyHost=proxy -Dhttp.proxyPort=3128 -Dhttps.proxyHost=proxy -Dhttps.proxyPort=3128 -Dhttp.nonProxyHosts=localhost|127.0.0.1
 
 # The firewall: the only containers with internet access. Each forwards HTTPS

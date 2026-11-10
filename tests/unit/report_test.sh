@@ -130,3 +130,20 @@ test_find_tests_match_shell_matcher() {
     done < <(find -P "$T/f" "${SENSITIVE_TESTS[@]}" -print0)
     assert_eq 3 "$listed"
 }
+
+# Folders the agent's own mounts cover are the host's: neither scan reports
+# what changes or disappears there.
+test_covered_folders_skipped() {
+    setup_report
+    mkdir -p ws/app/build/tmp/clone ws/app/src
+    echo x >ws/app/build/tmp/clone/AGENTS.md
+    report_snapshot "$T/ws" "$T/tmp" "$T/ws/app/build"
+    rm ws/app/build/tmp/clone/AGENTS.md
+    mkdir -p ws/app/build/tmp/other/.git
+    echo y >ws/app/build/.envrc
+    echo z >ws/app/src/AGENTS.md
+    out="$(report)"
+    assert_not_contains "app/build" "$out"
+    assert_not_contains "Deleted:" "$out"
+    assert_contains "  app/src/AGENTS.md" "$out"
+}

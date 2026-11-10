@@ -10,13 +10,15 @@ set -euo pipefail
 
 here="$(cd -P -- "$(dirname -- "$0")" && pwd -P)"
 agent="$here/../bin/agent"
+# shellcheck source=/dev/null
+. "$here/../lib/common.sh"
 scratch="$(cd -P -- "$(mktemp -d "${TMPDIR:-/tmp}/agent-run-it.XXXXXX")" && pwd -P)"
 # Each scratch workspace gets its own build and Gradle home volumes.
 cleanup() {
     local ws id
     for ws in "$scratch"/*/ws; do
         [[ -d "$ws" ]] || continue
-        id="$(printf '%s' "$ws" | shasum | cut -c1-12)"
+        id="$(workspace_id "$ws")"
         podman volume rm -f "agent-run-claude-build-$id" "agent-run-claude-gradle-$id" >/dev/null 2>&1 || true
     done
     chmod -R u+rwx "$scratch" 2>/dev/null
@@ -238,12 +240,17 @@ check "project's own AGENTS.md unchanged" "# own" "$(cat "$WS/AGENTS.md")"
 
 echo "build tools"
 # A project with locked mise tools and a Gradle wrapper. Uses the agent's real
-# tool volumes (agent-run-claude-*), which are caches; Temurin 21 downloads
-# once.
+# tool volumes (agent-run-claude-*), which are caches; Temurin 21 and the Gradle
+# distribution download once.
 fresh tools
 printf '[tools]\njava = "temurin-21"\n' >"$WS/mise.toml"
 ( cd "$WS" && mise lock --platform linux-arm64,linux-x64,macos-arm64 >/dev/null 2>&1 ) ||
     echo "  (mise lock failed on the host; the next checks will fail)"
+run_agent true >"$S/out" 2>&1 || true
+check "unapproved mise config not installed" yes \
+    "$(grep -q "new or changed since you approved it" "$S/out" && echo yes || echo no)"
+check "trust-tools approves it" yes \
+    "$(HOME="$HOME_DIR" WORKSPACE="$WS" /bin/bash "$agent" trust-tools 2>&1 | grep -q "Approved mise.toml mise.lock" && echo yes || echo no)"
 AGENT_MEMORY=6g run_agent bash -c '
     echo "java=$(java -version 2>&1 | grep " version " | cut -d\" -f2 | cut -d. -f1)"
     echo "java_path=$(mise which java)"
@@ -276,16 +283,23 @@ check "mise config without mise.lock warned about" yes \
     "$(grep -q "no mise.lock" "$S/out" && echo yes || echo no)"
 check "invalid AGENT_MEMORY refused" yes \
     "$(AGENT_MEMORY=lots run_agent true >/dev/null 2>&1 && echo no || echo yes)"
-# A wrapper jar that isn't Gradle's never runs. (The download itself needs a
-# real wrapper jar, which Gradle doesn't publish on its own.)
-( cd "$WS" && mise lock --platform linux-arm64,linux-x64,macos-arm64 >/dev/null 2>&1 ) || true
+# Only Gradle's own distributions are installed, into the agent's Gradle home
+# for this workspace, ready for the wrapper.
 mkdir -p "$WS/gradle/wrapper"
-printf '%s\n' 'distributionUrl=https\://services.gradle.org/distributions/gradle-9.7.0-bin.zip' \
-    'distributionSha256Sum=0000' >"$WS/gradle/wrapper/gradle-wrapper.properties"
-echo 'not a jar' >"$WS/gradle/wrapper/gradle-wrapper.jar"
+echo 'distributionUrl=https\://example.com/distributions/gradle-9.7.1-all.zip' \
+    >"$WS/gradle/wrapper/gradle-wrapper.properties"
 run_agent true >"$S/out" 2>&1 || true
-check "unverified wrapper jar not run" yes \
-    "$(grep -q "does not match Gradle's checksum for 9.7.0" "$S/out" && echo yes || echo no)"
+check "distribution from another host refused" yes \
+    "$(grep -q "distributionUrl is not on https://services.gradle.org/distributions/" "$S/out" && echo yes || echo no)"
+echo 'distributionUrl=https\://services.gradle.org/distributions/gradle-9.7.1-all.zip' \
+    >"$WS/gradle/wrapper/gradle-wrapper.properties"
+run_agent bash -c '
+    echo "dist=$(ls ~/.gradle/wrapper/dists/gradle-9.7.1-all/*/gradle-9.7.1-all.zip.ok >/dev/null 2>&1 && echo yes || echo no)"
+    touch ~/.gradle/planted' >"$S/out" 2>&1 || true
+check "Gradle distribution installed for the wrapper" yes "$(value dist)"
+fresh tools-other
+run_agent bash -c 'echo "planted=$([ -e ~/.gradle/planted ] && echo yes || echo no)"' >"$S/out" 2>&1 || true
+check "Gradle home not shared between workspaces" no "$(value planted)"
 
 echo "global gitignore"
 fresh gitignore

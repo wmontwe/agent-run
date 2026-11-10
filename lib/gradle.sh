@@ -42,7 +42,7 @@ find_gradle_state() {
 # builds: Gradle releases its locks through a localhost ping, which doesn't
 # reach another container.
 workspace_volume() {
-    printf 'agent-run-%s-%s-%s' "$1" "$2" "$(printf '%s' "$3" | shasum | cut -c1-12)"
+    printf 'agent-run-%s-%s-%s' "$1" "$2" "$(workspace_id "$3")"
 }
 
 # gradle_state_mounts VOLUME WS PATHS...: sets GRADLE_STATE_MOUNTS to the

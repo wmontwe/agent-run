@@ -30,6 +30,11 @@ assert_ok() {
     out="$( ("$@") 2>&1)" || fail "expected success: $* -> $out"
 }
 
+# assert_fails CMD...: CMD must fail.
+assert_fails() {
+    if ("$@") >/dev/null 2>&1; then fail "expected failure: $*"; fi
+}
+
 # assert_dies TEXT CMD...: CMD must exit nonzero with TEXT in its output.
 assert_dies() {
     local text="$1" out rc=0

@@ -92,3 +92,11 @@ test_check_container_path() {
         assert_dies "can't appear at the same path" check_container_path workspace "$path"
     done
 }
+
+test_workspace_id() {
+    local a
+    a="$(workspace_id /p/one)"
+    [[ "$a" =~ ^[0-9a-f]{12}$ ]] || fail "$a"
+    assert_eq "$a" "$(workspace_id /p/one)"
+    [[ "$a" != "$(workspace_id /p/two)" ]] || fail "same id for different paths"
+}

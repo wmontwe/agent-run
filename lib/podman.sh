@@ -38,6 +38,17 @@ new_container_name() {
     fi
 }
 
+# remove_tool_volumes AGENT: removes AGENT's installed tools and Gradle
+# distribution cache, so the next launch installs them again.
+remove_tool_volumes() {
+    local volume
+    for volume in "agent-run-$1-mise" "agent-run-$1-dists"; do
+        podman volume exists "$volume" || continue
+        podman volume rm "$volume" >/dev/null ||
+            die "could not remove $volume; is a $1 agent still running?"
+    done
+}
+
 # stop_container NAME: stops and removes NAME with its anonymous volumes.
 stop_container() {
     podman stop --time 10 "$1" >/dev/null 2>&1 || true

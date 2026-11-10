@@ -30,6 +30,12 @@ check_container_path() {
         die "$1 $2 can't appear at the same path in the container (/$top is the container's own)"
 }
 
+# workspace_id WS: prints a short ID of the workspace path WS, for the names
+# of per-workspace volumes and records.
+workspace_id() {
+    printf '%s' "$1" | shasum | cut -c1-12
+}
+
 # check_path_chars LABEL PATH: refuses characters that would corrupt a -v
 # mount argument, Compose interpolation or a find -path pattern.
 check_path_chars() {
