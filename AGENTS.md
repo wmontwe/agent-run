@@ -29,7 +29,7 @@ limits what it can reach and what it can leave behind for the host to run.
 | `tests/` | `run.sh` and `unit/` (no Podman), `integration.sh` (needs the Podman machine). |
 | `compose.yaml` | One agent service and one Squid proxy per agent, plus `proxy-tools`. |
 | `Dockerfile` | One image per agent (`ARG AGENT`) with only that CLI. |
-| `image/` | The images' entrypoint (virtual display, Playwright MCP registration), `browser-mcp`, and Pi's `browser` command and skill. |
+| `image/` | The images' entrypoint (virtual display, Playwright MCP registration) and `browser-mcp`. |
 | `agents/<agent>/` | `package.json`, `package-lock.json` and `.npmrc` pinning the agent's CLI. |
 | `proxy/` | Squid image, shared `squid.conf`, and `allowlists/`: `<agent>.txt` per agent, `build.txt` for every agent, `tools.txt` for `proxy-tools` only, `none.txt` empty. `github-relay/` holds the relay's nginx image and config. |
 | `workspace/` | Default workspace for plain `podman compose run`. |
@@ -126,9 +126,8 @@ configs, never mounted), and `instructions.md`.
   `/etc/gemini-cli/settings.json`. Chromium runs with `--no-sandbox`: its
   sandbox needs user namespaces, and the container is the sandbox.
   `playwright-mcp` comes from the agent's lockfile; browsers are never
-  downloaded. Pi has no MCP: it gets `browser` (playwright-core over CDP to
-  one Chromium per container, same settings) and the `browser` skill, mounted
-  read-only by `bin/agent` like the instructions.
+  downloaded. Pi registers it with its built-in MCP support
+  (`~/.pi/agent/mcp.json`).
 - **Gradle state:** `.gradle` and `.kotlin` next to each settings script and
   `build` next to each build script (found at launch) are covered by subpaths
   of a volume per agent and workspace (`agent-run-<agent>-build-<hash>`). The

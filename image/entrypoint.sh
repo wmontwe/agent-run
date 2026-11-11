@@ -14,8 +14,7 @@ if [ ! -e /tmp/.X11-unix/X99 ]; then
 fi
 
 # User scope in the agent's own home, through each CLI's own command, so the
-# user's other MCP servers stay. Gemini reads /etc/gemini-cli/settings.json;
-# Pi has no MCP.
+# user's other MCP servers stay. Gemini reads /etc/gemini-cli/settings.json.
 register() {
     "$@" >/dev/null 2>&1 || echo "agent-run: could not register the Playwright MCP server" >&2
 }
@@ -26,5 +25,9 @@ case "${1:-}:$AGENT_NAME" in
     codex:codex)
         codex mcp get playwright >/dev/null 2>&1 ||
             register codex mcp add playwright -- browser-mcp ;;
+    pi:pi)
+        # `pi mcp add` replaces an existing entry, so look first.
+        node -e 'try { process.exit(require(process.env.HOME + "/.pi/agent/mcp.json").mcpServers.playwright ? 0 : 1) } catch (e) { process.exit(1) }' ||
+            register pi mcp add playwright -- browser-mcp ;;
 esac
 exec "$@"

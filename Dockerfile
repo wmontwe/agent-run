@@ -18,8 +18,8 @@ RUN if [ "$(uname -m)" = aarch64 ]; then \
     fi
 
 # Seeing what the agent built: Chromium, headless, for Playwright MCP
-# (image/browser-mcp) and Pi's `browser` command (image/browser); a virtual
-# display (Xvfb, started by image/entrypoint.sh) with `scrot` for screenshots;
+# (image/browser-mcp); a virtual display (Xvfb, started by
+# image/entrypoint.sh) with `scrot` for screenshots;
 # and the X11, OpenGL (Mesa, software rendering) and font libraries the JDK's
 # AWT and Compose Desktop's Skiko load.
 RUN apt-get update \
@@ -82,7 +82,7 @@ RUN cd /opt/agent \
 
 # Modes set here, so they never depend on the checkout.
 COPY --chmod=755 image/entrypoint.sh /usr/local/bin/agent-entrypoint
-COPY --chmod=755 image/browser-mcp image/browser /usr/local/bin/
+COPY --chmod=755 image/browser-mcp /usr/local/bin/
 COPY image/gemini-settings.json /etc/gemini-cli/settings.json
 ENV PATH=/opt/agent/node_modules/.bin:$PATH
 ENV BROWSER=echo

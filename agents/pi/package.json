@@ -3,6 +3,6 @@
   "private": true,
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.4.0",
-    "playwright-core": "1.65.0-alpha-1792021904000"
+    "@playwright/mcp": "0.0.84"
   }
 }

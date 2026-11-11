@@ -455,18 +455,12 @@ run_agent bash -c '
     chromium --headless --no-sandbox --screenshot=/tmp/page.png "file://$PWD/index.html" >/dev/null 2>&1
     echo "chromium=$(png /tmp/page.png)"
     command -v playwright-mcp >/dev/null && echo mcp=yes || echo mcp=no
-    timeout 5 browser-mcp --help >/dev/null 2>&1 && echo mcp_runs=yes || echo mcp_runs=no
-    echo "cli_title=$(browser open "file://$PWD/index.html" | head -1)"
-    browser click h1 && browser screenshot /tmp/cli.png >/dev/null; echo "cli=$(png /tmp/cli.png)"
-    browser stop' >"$S/out" 2>&1 || true
+    timeout 5 browser-mcp --help >/dev/null 2>&1 && echo mcp_runs=yes || echo mcp_runs=no' >"$S/out" 2>&1 || true
 check "virtual display set" :99 "$(value display)"
 check "screenshot of the display" yes "$(value scrot)"
 check "headless Chromium screenshot" yes "$(value chromium)"
 check "Playwright MCP installed" yes "$(value mcp)"
 check "Playwright MCP starts" yes "$(value mcp_runs)"
-# Pi's command; the claude image has playwright-core through @playwright/mcp.
-check "browser command loads a page" probe "$(value cli_title)"
-check "browser command screenshot" yes "$(value cli)"
 
 echo "$passed passed, $failed failed"
 [[ $failed -eq 0 ]]
