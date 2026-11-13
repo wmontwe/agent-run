@@ -1,0 +1,12 @@
+[package]
+name = "mountplan"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Turns a checkout's inspection into a verified mount plan."
+
+[dependencies]
+sha2.workspace = true
+podman = { path = "../podman" }
+workspace = { path = "../workspace" }

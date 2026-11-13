@@ -2,7 +2,7 @@
   "name": "agent-run-codex",
   "private": true,
   "dependencies": {
-    "@openai/codex": "0.166.0",
+    "@openai/codex": "0.167.0",
     "@playwright/mcp": "0.0.84"
   }
 }

@@ -2,7 +2,7 @@
   "name": "agent-run-claude",
   "private": true,
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.316",
+    "@anthropic-ai/claude-code": "2.1.319",
     "@playwright/mcp": "0.0.84"
   }
 }

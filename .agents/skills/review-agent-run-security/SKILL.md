@@ -1,119 +1,86 @@
 ---
 name: review-agent-run-security
-description: Review agent-run security when explicitly requested (security review, threat model, isolation audit), including its launcher, Podman mounts, Git protection, protected folders, memory quarantine, proxy, supply chain, and isolation boundaries.
+description: Review agent-run security when explicitly requested (security review, threat model, isolation audit), including its launcher, mount plan and gate, protected folders, host-tool checks, egress proxy, supply chain, and isolation boundaries.
 ---
 
 # Review agent-run security
 
-Read the current README.md and applicable AGENTS.md first.
-Inspect bin/agent, lib/*.sh, compose.yaml, Dockerfile, agents/*/ (package.json,
-package-lock.json, .npmrc), proxy/Dockerfile, proxy/squid.conf, the
-per-agent allowlists, and .github/dependabot.yml.
+Read README.md, AGENTS.md and docs/architecture.md first: the threat model, accepted
+risks, invariants and protection tests are the guarantees to check. Inspect `crates/*`
+(the launcher in `crates/agent`, the libraries it orchestrates, the gate), `bin/agent`,
+`image/Containerfile`, `agents/*/` (package.json, package-lock.json, .npmrc),
+`proxy/Dockerfile`, `Cargo.lock` and `.github/dependabot.yml`.
 
-Treat agents as arbitrary-code adversaries. Treat documentation
-and recorded verification results as claims to verify.
+Treat agents as arbitrary-code adversaries, and anything they can write as hostile.
+Treat documentation and recorded results as claims to verify.
 
-Review without modifying project files or committing. Recommend
-minimal fixes consistent with the project's existing design.
+Review without modifying project files or committing. Recommend minimal fixes consistent
+with the design.
 
 ## Review boundaries
 
-- Launch integrity: canonical paths, symlinks, overlap checks,
-  argument handling, service validation, Compose environment loading
-  (`--env-file /dev/null`, launch from the trusted root), and
-  protection of launcher files.
-- Isolation mode: the connection is rootless and refused otherwise;
-  `/proc/self/uid_map` shows a real user namespace; capabilities,
-  no_new_privs and seccomp.
-- Mount enforcement: effective mounts, writable aliases, hard links,
-  nested mounts, and races between validation and launch.
-- Git protection: attempted writes, deletion, renaming, and replacement
-  of .git; external metadata; the guard against `core.hooksPath` and
-  `include.path` / `includeIf.*.path` pointing into the workspace
-  (relative, `~`, `..`, symlinked and nested includes); command-valued
-  settings that are not checked.
-- Protected folders: `.signing` hidden (confidentiality and writes),
-  `.idea` read-only (writes, symlinks inside it); alternate access
-  paths such as committed copies in Git history, missing directories,
-  and unsupported layouts.
-- Memory quarantine: hostile filenames, symlinks, special files,
-  destination collisions, concurrent replacement, and confinement of
-  host-side traversal and movement. When memory is a Git repository: its
-  read-only `.git`, `.gitignore` and `.gitattributes`, agent-made
-  look-alikes, and Git config pointing between workspace and memory.
-- Lifecycle: signals, exit status, shutdown before scanning, cleanup,
-  unique container names, protected markers, and temporary-volume
-  isolation.
-- Resources: memory, CPU and process limits; unbounded `/tmp` volumes.
-- Networking: direct egress, DNS, host/VM access (including services
-  on the network gateway), private destinations, cross-agent access,
-  proxy restrictions, allowlist breadth (hosts usable for exfiltration),
-  and configuration integrity.
-- Supply chain: image digests, lockfile integrity, npm install scripts
-  never running, the Claude binary workaround, self-updaters, and what
+- Launch integrity: the policy read only from the host and validated strictly; canonical
+  paths; symlinks in any mount target's path; characters Podman's arguments can't carry;
+  how the launcher builds Podman arguments.
+- Isolation mode: rootless Podman refused otherwise; the pod's user namespace
+  (`keep-id`); read-only root, no capabilities, `no-new-privileges`, resource limits.
+- Mount enforcement: the mount plan (masks, read-only folders, pinned parents, private
+  volume subpaths, the host's Gradle state); the gate holding every container until its
+  mounts match the plan by type-specific identity, inode included; races between planning
+  and start; case aliases on a case-insensitive checkout; warm starts reusing a pod's plan,
+  the rules hash, and folders reported as unprotected.
+- Host tools: the IntelliJ reload check; engram's locked links and the immutable flag; the
+  Git config guard (host Git loading hooks or includes from agent-writable files), which
+  the design requires at start; nested `.git` entries and hard links, accepted risks.
+- Egress: one proxy, per-pod rules by subnet, names refused before resolving (`-n`),
+  private and VM/host destinations, `CONNECT` only, live reloads, the proxy's hardening,
+  allowlist breadth (hosts usable for exfiltration).
+- Lifecycle: the start lock, unique names, attaching and detaching, signals, exit status,
+  cleanup of containers, idle pods and proxy rules.
+- Supply chain: image digests (base, Rust, Squid), lockfiles, npm install scripts never
+  running, the Claude binary workaround, Cargo dependencies, self-updaters, and what
   Dependabot can and cannot update.
-- Reporting: no symlink following, NUL-delimited paths, escaped output,
-  sensitive deletions, ignored files, nested Git entries, explicit
-  traversal failures, and terminal escape sequences reaching the host
-  (in the report, in tool error messages, and in the agent's own output).
-- Documentation: distinguish enforced boundaries from advisory checks,
-  shared-memory risks, and host execution of writable workspace content.
+- Documentation: enforced guarantees versus accepted risks; claims the tests don't cover.
 
 ## Verify safely
 
-Use disposable repositories and scratch state. Never use personal
-repositories, real credentials, or the real ~/.agent-run.
+Use disposable checkouts and scratch state. Never use personal repositories, real
+credentials, or the real `~/.agent-run`: point `AGENT_RUN_HOME` at a scratch folder with
+its own `policy.toml` (keep `HOME`, so Podman finds its connection).
 
-`bin/agent` always touches `~/.agent-run` (memory quarantine, home
-mount), so run it with a scratch `HOME` containing
-`.agent-run/{knowledge,memory,<agent>/home}`. Podman then cannot find
-its connection: set `CONTAINER_HOST` and `CONTAINER_SSHKEY` from the
-rootless entry in `podman system connection list`. To test against the
-user's global Git configuration, also set `XDG_CONFIG_HOME` to the real
-one; it is only read, never written.
-
-Use harmless canaries. Never execute planted hooks on the host.
-Inspect source before running project commands. Create scratch Git
+Use harmless canaries. Never execute planted hooks on the host. Create scratch Git
 fixtures with `git -c core.hooksPath=/dev/null -c commit.gpgsign=false`.
-Read Git configuration on the host only with `git --no-pager config
---file …` or `--no-includes`.
 
-Building images, starting proxies and creating volumes is allowed.
-Record `podman ps -a` and `podman volume ls` first and leave both as
-you found them; never stop or reconfigure the Podman machine.
+Building images, starting containers and creating volumes is allowed. Record `podman ps
+-a`, `podman volume ls` and `podman network ls` first and leave them as you found them;
+never stop or reconfigure the Podman machine. A proxy container started with scratch state
+must be removed afterwards: the real launcher reuses it.
 
-Follow project testing guidance: run tests/run.sh, and
-tests/integration.sh when Podman is available; for a new attack,
-prefer adding a failing test over a one-off reproduction. Check Bash syntax and Bash 3.2
-compatibility where available. Use ShellCheck if installed.
+Follow the project's testing guidance (AGENTS.md): `cargo test`, the `--ignored` Podman
+tests, `cargo clippy`. For a new attack, prefer adding a failing test over a one-off
+reproduction.
 
-Record the actual OS, Podman backend, rootless mode, network backend,
-Compose provider, and versions. Do not generalize native Linux results
-to macOS Podman Machine, or rootful results to rootless.
+Record the actual OS, Podman backend and version, rootless mode and network backend. Do
+not generalize native Linux results to macOS Podman machines, or rootful results to
+rootless.
 
-If implementation files or runtime access are missing, continue the
-available review and explicitly mark remaining checks unverified.
+If implementation or runtime access is missing, continue the available review and mark the
+remaining checks unverified.
 
 ## Report
 
 Rate severity against the guarantees:
 
-- Critical: host code execution, or writes to protected Git metadata.
-- High: missing isolation (no user namespace, reachable privileged host
-  services), reading hidden folders, or escaping the firewall.
-- Medium: bypassing an enforced check, or confidentiality leaks with
-  preconditions.
-- Low: bypassing advisory checks, denial of service, or documentation
-  that overstates a guarantee.
+- Critical: host code execution, or writes to protected folders or Git metadata.
+- High: missing isolation (no user namespace, reachable privileged host services), reading
+  masked folders, or escaping the egress proxy.
+- Medium: bypassing an enforced check, or confidentiality leaks with preconditions.
+- Low: denial of service, or documentation that overstates a guarantee.
 
-Lead with findings ordered by severity. Include for each:
+Lead with findings ordered by severity. Include for each: file and line; preconditions and
+reproduction or concrete static evidence; impact and the affected guarantee; the smallest
+practical fix.
 
-- File and line reference.
-- Preconditions and reproduction or concrete static evidence.
-- Impact and the affected security guarantee.
-- The smallest practical fix.
-
-Separate demonstrated vulnerabilities, unverified concerns, and
-accepted residual risks. List tested environments and verification gaps.
-If no vulnerabilities are found, say so without claiming untested
+Separate demonstrated vulnerabilities, unverified concerns, and accepted risks. List tested
+environments and verification gaps. If nothing is found, say so without claiming untested
 boundaries are proven safe.

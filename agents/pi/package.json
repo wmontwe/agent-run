@@ -2,7 +2,7 @@
   "name": "agent-run-pi",
   "private": true,
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@earendil-works/pi-coding-agent": "1.5.0",
     "@playwright/mcp": "0.0.84"
   }
 }

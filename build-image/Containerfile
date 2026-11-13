@@ -1,0 +1,58 @@
+# The build container's image: the
+# JDKs, the gate as entrypoint, gradle-run's server with its init scripts, and each session's
+# display and browser. Build from the repository root:
+#   podman build -t localhost/agent-run-build -f build-image/Containerfile \
+#       --ignorefile build-image/Containerfile.ignore .
+
+# The gate and the build server, as static binaries (crates/gate, crates/buildrun).
+FROM docker.io/library/rust:1.99.1-alpine@sha256:44819b27be4c97b0e4d7203bd2e02c4820f97700211b6a37fb4c246a2de59383 AS tools
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates crates
+RUN cargo build --release --locked -p gate -p buildrun \
+    && cp target/release/agent-run-gate target/release/gradle-run-server /
+
+# The Playwright MCP server and its dependencies, pinned with checksums in
+# build-image/browser/package-lock.json; install scripts never run.
+FROM docker.io/library/node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370 AS browser
+COPY build-image/browser/package.json build-image/browser/package-lock.json /opt/browser/
+RUN cd /opt/browser && npm ci --ignore-scripts --no-audit --no-fund
+
+# The Temurin LTS JDKs, from Eclipse's images: pinned by digest (the multi-arch index), so a
+# rebuild never picks up a changed JDK, and kept current by Dependabot.
+FROM docker.io/library/eclipse-temurin:11-jdk@sha256:8b64035b610d11979ee0fdefca06355b8fcfb7001ec657a5223ca996b82614b4 AS jdk11
+FROM docker.io/library/eclipse-temurin:17-jdk@sha256:5465815640e10433422217335e15a523a3e57021a1f2ae0fc3849380d237979f AS jdk17
+FROM docker.io/library/eclipse-temurin:21-jdk@sha256:0a3f329821dcadf54b2a3033a15e2e9f007069a9db43d7f51897e6b80e726b07 AS jdk21
+FROM docker.io/library/eclipse-temurin:25-jdk@sha256:b8705e936964c228dfce359e63dbf08f6c69cb380ed1d576b1f6b1064f15567d AS jdk25
+
+# Pinned by digest (the multi-arch index), so a rebuild never picks up a changed base.
+FROM docker.io/library/debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+# curl and unzip install the wrapper's distribution; git for builds that use it. The
+# Android SDK's Linux tools (aidl, aapt2) exist for x86_64 only; the Podman machine runs them
+# emulated, with these x86_64 libraries. Each session's display and browser run here too:
+# Xvfb, Chromium and Node for the Playwright MCP server, and the X11, Mesa (software
+# rendering) and font libraries AWT and Compose Desktop's Skiko load. socat serves engram's
+# MCP server on its socket when the image runs a project's engram service.
+RUN dpkg --add-architecture amd64 \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl unzip git \
+        libc6:amd64 libstdc++6:amd64 zlib1g:amd64 \
+        xvfb chromium nodejs socat \
+        libxext6 libxrender1 libxtst6 libxi6 libxrandr2 libfreetype6 fontconfig libgl1 libgl1-mesa-dri \
+        fonts-dejavu-core fonts-liberation fonts-noto-color-emoji \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --uid 1000 --create-home --shell /bin/sh build
+COPY --from=jdk11 /opt/java/openjdk /opt/jdk/11
+COPY --from=jdk17 /opt/java/openjdk /opt/jdk/17
+COPY --from=jdk21 /opt/java/openjdk /opt/jdk/21
+COPY --from=jdk25 /opt/java/openjdk /opt/jdk/25
+COPY --from=tools --chmod=755 /agent-run-gate /gradle-run-server /usr/local/bin/
+COPY build-image/redirect.init.gradle.kts build-image/mirror.init.gradle.kts /etc/agent-run/
+COPY --from=browser /opt/browser /opt/browser
+COPY --chmod=755 build-image/browser-mcp build-image/agent-run-display /usr/local/bin/
+ENV JAVA_HOME=/opt/jdk/21 \
+    AGENT_RUN_JDKS=/opt/jdk/11,/opt/jdk/17,/opt/jdk/21,/opt/jdk/25 \
+    AGENT_RUN_INIT_SCRIPTS=/etc/agent-run \
+    PATH=/opt/jdk/21/bin:$PATH
+USER build
+ENTRYPOINT ["/usr/local/bin/agent-run-gate"]
