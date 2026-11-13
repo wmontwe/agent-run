@@ -1,0 +1,6 @@
+# Only the Cargo workspace goes into the gate's build context.
+*
+!Cargo.toml
+!Cargo.lock
+!crates
+crates/**/target

@@ -1,0 +1,12 @@
+[package]
+name = "egress"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "The egress proxy: one Squid for every project pod, an allowlist per pod."
+
+[dependencies]
+md-5.workspace = true
+policy = { path = "../policy" }
+podman = { path = "../podman" }

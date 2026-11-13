@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+# The oldest Rust that builds it and its dependencies (File::try_lock); CI checks it.
+rust-version = "1.89"
+publish = false
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+# Merges the session's MCP servers into Pi's own mcp.json, which has no other way in.
+serde_json = "1"
+toml = "1.2"
+sha2 = "0.11"
+# The Gradle wrapper names its distribution folder after the MD5 of the URL (gradle-run).
+md-5 = "0.11"
+# Edits policy.toml for approvals, keeping the user's comments and layout.
+toml_edit = { version = "0.25", default-features = false, features = ["parse", "display"] }
