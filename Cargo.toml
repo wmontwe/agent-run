@@ -13,7 +13,7 @@ serde = { version = "1", features = ["derive"] }
 # Merges the session's MCP servers into Pi's own mcp.json, which has no other way in.
 serde_json = "1"
 toml = "0.9"
-sha2 = "0.10"
+sha2 = "0.11"
 # The Gradle wrapper names its distribution folder after the MD5 of the URL (gradle-run).
 md-5 = "0.10"
 # Edits policy.toml for approvals, keeping the user's comments and layout.
