@@ -1,0 +1,11 @@
+[package]
+name = "approvals"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Approved egress destinations: a pod's session approvals and the policy's project and global lists."
+
+[dependencies]
+policy = { path = "../policy" }
+toml_edit.workspace = true

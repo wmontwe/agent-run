@@ -1,0 +1,12 @@
+[package]
+name = "builds"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "The project's build container: its volumes, settings and Podman arguments."
+
+[dependencies]
+mountplan = { path = "../mountplan" }
+pod = { path = "../pod" }
+podman = { path = "../podman" }

@@ -1,0 +1,29 @@
+#!/bin/sh
+# A session's display and browser in the build container. The launcher runs this detached:
+#   agent-run-display start NUMBER SCREENSHOT_DIR    Xvfb :NUMBER, browser on 7400 + NUMBER
+#   agent-run-display stop NUMBER
+set -eu
+n=$2
+run=/tmp/agent-run-display-$n
+case $1 in
+start)
+    mkdir -p "$run" "$3"
+    # No TCP listener: the pod's containers reach it through X's abstract socket.
+    Xvfb ":$n" -screen 0 1920x1080x24 -nolisten tcp >"$run/xvfb.log" 2>&1 &
+    echo $! >"$run/xvfb.pid"
+    # Chromium needs a writable home; the container's root is read-only.
+    mkdir -p "$run/home"
+    HOME="$run/home" DISPLAY=":$n" browser-mcp "$((7400 + n))" "$3" >"$run/browser.log" 2>&1 &
+    echo $! >"$run/browser.pid"
+    ;;
+stop)
+    for pid in "$run"/*.pid; do
+        [ -f "$pid" ] && kill "$(cat "$pid")" 2>/dev/null || true
+    done
+    rm -rf "$run"
+    ;;
+*)
+    echo "usage: agent-run-display start|stop NUMBER [SCREENSHOT_DIR]" >&2
+    exit 2
+    ;;
+esac

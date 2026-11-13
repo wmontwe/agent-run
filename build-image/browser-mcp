@@ -1,0 +1,10 @@
+#!/bin/sh
+# Playwright MCP with Debian's Chromium for one session:
+# headless, a fresh profile, out through the egress proxy, served over HTTP on the pod's
+# localhost. Chromium's own sandbox needs user namespaces, which the container doesn't allow;
+# the container is the sandbox. Usage: browser-mcp PORT SCREENSHOT_DIR
+exec node /opt/browser/node_modules/@playwright/mcp/cli.js \
+    --browser chromium --executable-path /usr/bin/chromium \
+    --headless --isolated --no-sandbox \
+    --proxy-server http://proxy:3128 --proxy-bypass localhost,127.0.0.1 \
+    --host 127.0.0.1 --port "$1" --output-dir "$2"

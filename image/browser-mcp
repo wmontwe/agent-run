@@ -1,8 +1,0 @@
-#!/bin/sh
-# Playwright MCP with Debian's Chromium: headless, a fresh profile per session,
-# through the agent's proxy. Chromium's own sandbox needs user namespaces,
-# which the container doesn't allow; the container is the sandbox.
-exec playwright-mcp --browser chromium --executable-path /usr/bin/chromium \
-    --headless --isolated --no-sandbox \
-    --proxy-server http://proxy:3128 --proxy-bypass localhost,127.0.0.1 \
-    --output-dir /tmp/playwright-mcp "$@"

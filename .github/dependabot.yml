@@ -1,15 +1,30 @@
-# Keeps every pin current: agent CLIs (lockfiles in agents/<agent>/), the base
-# image (Dockerfile), the proxy image (proxy/Dockerfile) and the relay image
-# (proxy/github-relay/Dockerfile). The cooldown waits a
-# week after a release before proposing it, so a compromised release has time
-# to be caught and pulled first.
+# Keeps every pin current: agent CLIs (lockfiles in agents/<agent>/), the build
+# image's browser (build-image/browser/), the agent image's base and Rust images
+# (image/Containerfile), the proxy image (proxy/Dockerfile), the relay and mirror
+# images (proxy/github-relay/, proxy/mirror/), the gate's test image
+# (crates/gate/), the build image's bases and JDKs (build-image/Containerfile), the
+# launcher's Rust crates (Cargo.lock) and CI's actions (.github/workflows/). The
+# cooldown delays version updates by a week; security updates bypass it.
+# Images are pinned as tag@digest: Dependabot reads the version from the tag.
 version: 2
 updates:
   - package-ecosystem: npm
-    directories: [/agents/claude, /agents/codex, /agents/gemini, /agents/pi]
+    directories: [/agents/claude, /agents/codex, /agents/gemini, /agents/pi, /build-image/browser]
     schedule: {interval: weekly}
     cooldown: {default-days: 7}
   - package-ecosystem: docker
-    directories: [/, /proxy, /proxy/github-relay]
+    directories: [/image, /build-image, /proxy, /proxy/github-relay, /proxy/mirror, /crates/gate]
+    schedule: {interval: weekly}
+    cooldown: {default-days: 7}
+    # /opt/jdk/<major> must keep that Java major; digest and patch updates are welcome.
+    ignore:
+      - dependency-name: "*eclipse-temurin"
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: cargo
+    directories: [/]
+    schedule: {interval: weekly}
+    cooldown: {default-days: 7}
+  - package-ecosystem: github-actions
+    directories: [/]
     schedule: {interval: weekly}
     cooldown: {default-days: 7}

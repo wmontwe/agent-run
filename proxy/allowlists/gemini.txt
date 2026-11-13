@@ -1,7 +1,0 @@
-# Hosts the gemini agent may reach over HTTPS (port 443). One per line.
-# A leading dot also allows subdomains: .example.com
-# Apply changes: podman compose restart proxy-gemini
-generativelanguage.googleapis.com
-accounts.google.com
-oauth2.googleapis.com
-cloudcode-pa.googleapis.com
