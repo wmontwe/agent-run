@@ -1,0 +1,7 @@
+# The build image needs the Cargo workspace (gate, build server) and its init scripts.
+*
+!Cargo.toml
+!Cargo.lock
+!crates
+!build-image
+crates/**/target

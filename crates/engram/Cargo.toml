@@ -1,0 +1,11 @@
+[package]
+name = "engram"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "A project's engram service: engram's MCP server outside the pod, reached over a socket."
+
+[dependencies]
+pod = { path = "../pod" }
+podman = { path = "../podman" }

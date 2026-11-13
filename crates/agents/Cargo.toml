@@ -1,0 +1,10 @@
+[package]
+name = "agents"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Each agent CLI's conventions: its command line, MCP configuration and global instructions."
+
+[dependencies]
+serde_json.workspace = true

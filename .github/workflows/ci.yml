@@ -1,0 +1,74 @@
+# Verifies every change, Dependabot's included: formatting, lints and unit tests, the oldest
+# supported Rust, and that every image builds and passes runtime smoke checks. The launcher runs on macOS (Apple
+# Silicon), so its checks run there; the images build on arm64 Linux, the Podman machine's
+# architecture, and compile the gate and the build server. The Podman suites (`-- --ignored`)
+# need the Podman machine and stay local.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust
+        run: .github/rustup.sh stable rustfmt clippy
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+
+  rust-version:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust, the oldest supported (rust-version in Cargo.toml)
+        run: .github/rustup.sh "$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)"
+      - run: cargo check --locked --workspace --all-targets
+
+  images:
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: agent-claude, args: --build-arg AGENT=claude -f image/Containerfile --ignorefile image/Containerfile.ignore .}
+          - {name: agent-codex, args: --build-arg AGENT=codex -f image/Containerfile --ignorefile image/Containerfile.ignore .}
+          - {name: agent-gemini, args: --build-arg AGENT=gemini -f image/Containerfile --ignorefile image/Containerfile.ignore .}
+          - {name: agent-pi, args: --build-arg AGENT=pi -f image/Containerfile --ignorefile image/Containerfile.ignore .}
+          - {name: build, args: -f build-image/Containerfile --ignorefile build-image/Containerfile.ignore .}
+          - {name: gate, args: -f crates/gate/Containerfile --ignorefile crates/gate/Containerfile.ignore .}
+          - {name: proxy, args: proxy}
+          - {name: github-relay, args: proxy/github-relay}
+          - {name: mirror, args: proxy/mirror}
+    name: image ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Podman
+        run: command -v podman || { sudo apt-get update && sudo apt-get install -y podman; }
+      - name: Build
+        run: podman build -t localhost/agent-run-${{ matrix.name }} ${{ matrix.args }}
+      - name: Smoke test
+        timeout-minutes: 5
+        env:
+          IMAGE_NAME: ${{ matrix.name }}
+        run: sh .github/smoke-image.sh "$IMAGE_NAME"

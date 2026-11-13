@@ -1,0 +1,7 @@
+# The agent image needs the Cargo workspace (for the gate) and the agents' lockfiles.
+*
+!Cargo.toml
+!Cargo.lock
+!crates
+!agents
+crates/**/target

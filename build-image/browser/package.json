@@ -1,0 +1,7 @@
+{
+  "name": "agent-run-browser",
+  "private": true,
+  "dependencies": {
+    "@playwright/mcp": "0.0.84"
+  }
+}

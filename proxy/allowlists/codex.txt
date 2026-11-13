@@ -1,6 +1,0 @@
-# Hosts the codex agent may reach over HTTPS (port 443). One per line.
-# A leading dot also allows subdomains: .example.com
-# Apply changes: podman compose restart proxy-codex
-api.openai.com
-auth.openai.com
-chatgpt.com

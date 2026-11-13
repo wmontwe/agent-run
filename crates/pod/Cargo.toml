@@ -1,0 +1,15 @@
+[package]
+name = "pod"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "The lifecycle of a project's Podman pod and the plan it was started with."
+
+[dependencies]
+sha2.workspace = true
+mountplan = { path = "../mountplan" }
+podman = { path = "../podman" }
+
+[dev-dependencies]
+workspace = { path = "../workspace" }

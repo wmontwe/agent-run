@@ -1,0 +1,32 @@
+[package]
+name = "agent"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "agent-run's launcher: orchestrates the other crates to start an agent session."
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "agent"
+path = "src/main.rs"
+
+[dependencies]
+sha2.workspace = true
+agents = { path = "../agents" }
+approvals = { path = "../approvals" }
+builds = { path = "../builds" }
+egress = { path = "../egress" }
+engram = { path = "../engram" }
+mirror = { path = "../mirror" }
+mountplan = { path = "../mountplan" }
+pod = { path = "../pod" }
+podman = { path = "../podman" }
+policy = { path = "../policy" }
+relay = { path = "../relay" }
+sessions = { path = "../sessions" }
+vision = { path = "../vision" }
+workspace = { path = "../workspace" }
+

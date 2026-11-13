@@ -1,0 +1,14 @@
+# The gate as a static binary in an otherwise empty image; agent and build images copy
+# it from here. Build from the repository root:
+#   podman build -t localhost/agent-run-gate -f crates/gate/Containerfile \
+#       --ignorefile crates/gate/Containerfile.ignore .
+FROM docker.io/library/rust:1.99.1-alpine@sha256:0a555e8b51945db91fd7b8411b4272bb5b8bfa04261d31eaeb2ada564bc02632 AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates crates
+# Only the gate: the other crates are host code.
+RUN cargo build --release --locked -p gate \
+    && cp target/release/agent-run-gate /agent-run-gate
+
+FROM scratch
+COPY --from=build /agent-run-gate /agent-run-gate

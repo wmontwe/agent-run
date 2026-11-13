@@ -1,293 +1,114 @@
 # AGENTS.md
 
 Guidance for agents working on this repository. User documentation is
-[README.md](README.md); keep both consistent when behavior changes.
+[README.md](README.md) and [Configuration](docs/configuration.md). Component responsibilities,
+trust boundaries and invariants are in [Architecture](docs/architecture.md).
+Keep these consistent when behavior changes.
 
 ## Purpose
 
-agent-run runs coding agents (Claude Code, Codex, Gemini CLI, Pi) in rootless
-Podman containers on macOS, isolated from the host and from each other.
-Threat model: **the agent in the container is untrusted.** Everything here
-limits what it can reach and what it can leave behind for the host to run.
+agent-run runs coding agents in rootless Podman containers on macOS, on the user's live
+checkout. Threat model: **the agent in the container is untrusted**, and so is anything
+it can write. agent-run prevents; it doesn't report after the fact.
 
 ## Layout
 
 | Path | Role |
-| --- | --- |
-| `bin/agent` | The launcher and only supported entry point. Holds the configuration (`hidden`, `readonly_dirs`, mount sources) and the order of the checks. |
-| `lib/common.sh` | Errors and path helpers (`die`, `canonical`, `overlaps`, `resolve_path`). |
-| `lib/protect.sh` | `.git` and protected-folder checks, memory repository detection, hard links. |
-| `lib/git-guard.sh` | Git config guard. |
-| `lib/memory.sh` | Memory quarantine. |
-| `lib/lock.sh` | The memory lock. |
-| `lib/engram.sh` | Engram detection and validation. |
-| `lib/tools.sh` | Build tools: approved mise configs, the install and copy containers, and the agent's tool mounts. |
-| `lib/github.sh` | Checks the GitHub relay's repository list. |
-| `lib/gradle.sh` | Finds the Gradle state folders the agent gets its own copy of. |
-| `lib/report.sh` | Snapshot and post-run report. |
-| `lib/podman.sh` | Rootless check, `compose`, container naming and cleanup. The only library that calls Podman. |
-| `tests/` | `run.sh` and `unit/` (no Podman), `integration.sh` (needs the Podman machine). |
-| `compose.yaml` | One agent service and one Squid proxy per agent, plus `proxy-tools`. |
-| `Dockerfile` | One image per agent (`ARG AGENT`) with only that CLI. |
-| `image/` | The images' entrypoint (virtual display, Playwright MCP registration) and `browser-mcp`. |
-| `agents/<agent>/` | `package.json`, `package-lock.json` and `.npmrc` pinning the agent's CLI. |
-| `proxy/` | Squid image, shared `squid.conf`, and `allowlists/`: `<agent>.txt` per agent, `build.txt` for every agent, `tools.txt` for `proxy-tools` only, `none.txt` empty. `github-relay/` holds the relay's nginx image and config. |
-| `workspace/` | Default workspace for plain `podman compose run`. |
-
-Host state is under `~/.agent-run/`: `knowledge/` (read-only `/knowledge`),
-`memory/` (read-write `/memory`, shared by all agents), `<agent>/home/`
-(`/home/node`), `quarantine/` (never mounted), `github-repos.txt` (the relay's
-repositories, never mounted in an agent), `tools-trust/` (approved mise
-configs, never mounted), and `instructions.md`.
-
-## Architecture
-
-- **Workspace path:** the workspace is mounted at its canonical host path
-  (and is the working directory), so absolute paths in build state and
-  relative links, engram's included, mean the same on the host and in the
-  container. Paths under the container's own top-level folders
-  (`CONTAINER_RESERVED`) are refused.
-- **Containers:** read-only root, no capabilities, `no-new-privileges`,
-  `userns_mode: keep-id:uid=1000,gid=1000`, resource limits, no engine
-  socket. Base and proxy images pinned by digest, CLIs by lockfile and
-  installed with `npm ci --ignore-scripts`.
-- **Egress:** each agent sits on its own `internal: true` network; its only
-  way out is its proxy (`proxy:3128`), which allows HTTPS `CONNECT` to
-  listed hosts. The proxy's `egress` network can reach the Mac, the VM's
-  sshd and the gvproxy gateway; Squid's `private` ACL denies those.
-- **GitHub relay:** a CONNECT proxy can't see methods or paths, so GitHub
-  stays off the allowlists. `github-relay` (nginx, on every agent's network
-  and `egress`) ends the agent's connection and forwards only GET and HEAD
-  for the repositories in `~/.agent-run/github-repos.txt`, to `api.github.com`
-  only, with a verified certificate and without the agent's headers. It adds
-  no token, so GitHub's anonymous rate limit applies. `bin/agent` starts it
-  only if that file exists and refuses a list with invalid lines.
-- **Git:** `<workspace>/.git` is mounted read-only; agents never commit. Git
-  settings that make host Git load files from an agent-writable folder are
-  refused: enforced for hooks and includes, best effort for settings that run
-  commands (only path-like words are resolved).
-- **Protected paths** (top level only): `.signing` is covered by an empty
-  read-only folder and `local.properties` (host paths, often secrets) by an
-  empty read-only file; `.idea` is mounted read-only and refused if it
-  contains a symlink. Missing ones are not created; a symlink or the wrong
-  kind of entry in their place is refused.
-- **Hard links:** protected files that share an inode with a file in a
-  writable mount are refused before launch. Agents can't create such links,
-  since `link()` across mounts fails. Folders covered by the agent's Gradle
-  state aren't scanned: the agent can't reach the host's copies.
-- **Memory:** before and after each run, everything that isn't a directory or
-  a regular `.md`, `.jsonl` or empty `.gitkeep` file, or that has an unsafe
-  name, is moved to quarantine. The quarantine runs in a sandbox container,
-  never on the host, because memory is shared and a concurrent agent could
-  swap in symlinks; meanwhile every other container with memory mounted is
-  paused, under `~/.agent-run/memory.lock`. Memory may be a Git repository:
-  its `.git` (and an existing `.gitignore`/`.gitattributes`) is mounted
-  read-only, but only when it matches the record written by
-  `agent trust-memory`, since an agent can create a `.git` itself.
-- **Engram:** top-level workspace links of exactly the form
-  `../<repo>/projects/<project>/<name>` (named like their target, all into
-  one project) mount that project's package read-only at the same relative
-  path, its `.memory` writable (treated like memory: guard, hard links,
-  pause, quarantine), and engram-core's skills read-only. A project's own
-  `AGENTS.md` file is covered read-only by the package's. The repository's
-  `.git`, `engram` and engram-core scripts are never mounted. Links of that
-  form that disagree or don't validate are refused. `AGENT_ENGRAM=0` turns it
-  off.
-- **Build tools:** the project configures its runtimes and build (mise,
-  Gradle, Kotlin, JVM settings); agent-run only provides them. Before the
-  agent starts, an install container (agent image, read-only, no
-  capabilities, network only through `proxy-tools`) gets copies of the
-  project's mise files and wrapper properties, never the workspace. It runs
-  `mise install --locked`, but only for mise files whose digest matches the
-  user's `agent trust-tools` record: mise runs commands from its config
-  (hooks, `exec` templates), which agents can edit. It downloads the Gradle
-  distribution the wrapper names, only from
-  `services.gradle.org/distributions/`, checks it against the checksum Gradle
-  publishes next to it, and unpacks it into `agent-run-<agent>-dists`, which
-  no agent mounts, in the wrapper's layout (`<name>/<base-36 MD5 of the
-  URL>/`, with a `.ok` marker). It also copies the host's Android SDK
-  licenses. Nothing from the project runs there: no wrapper jar, no Java. A
-  second container, without network and with the cache read-only, copies the
-  distribution into the agent's `~/.gradle` unless one is there. That home is
-  agent-writable, so no container that installs anything reads it. Results live in
-  per-agent volumes, `/mise` (read-only for the agent) and `/android`, and in
-  `~/.gradle`, a volume per agent and workspace
-  (`agent-run-<agent>-gradle-<hash>`): builds load code from it (init
-  scripts, cached plugins and jars), so an agent can't plant that for another
-  workspace, and Gradle's lock release ping doesn't reach another container.
-  `agent refresh-tools <agent>` removes the mise and distribution volumes.
-  Every JVM gets the proxy through `JAVA_TOOL_OPTIONS`. On ARM64 the image has x86-64 runtime
-  libraries, because Android's `aapt2` exists only for x86-64 and runs
-  through the VM's QEMU.
-- **Display and browser:** the entrypoint starts Xvfb on `:99` without a TCP
-  listener, and when the agent's CLI starts, registers `browser-mcp`
-  (Playwright MCP on Debian's Chromium, headless, isolated profile, through
-  the proxy) in the CLI's user settings if missing; Gemini gets it from
-  `/etc/gemini-cli/settings.json`. Chromium runs with `--no-sandbox`: its
-  sandbox needs user namespaces, and the container is the sandbox.
-  `playwright-mcp` comes from the agent's lockfile; browsers are never
-  downloaded. Pi registers it with its built-in MCP support
-  (`~/.pi/agent/mcp.json`).
-- **Gradle state:** `.gradle` and `.kotlin` next to each settings script and
-  `build` next to each build script (found at launch) are covered by subpaths
-  of a volume per agent and workspace (`agent-run-<agent>-build-<hash>`). The
-  host's Gradle and IDE load these folders, so agents can't plant outputs
-  there, and builds on the host and in the container never share them: Gradle
-  coordinates builds through file locks and a localhost ping, which don't
-  cross the VM. Missing folders are covered too (Podman leaves empty mount
-  points on the host); a symlink or file in their place is refused. Modules
-  created during a run aren't covered until the next launch.
-- **Memory limit:** `AGENT_MEMORY` sets the container limit and nothing else;
-  `bin/agent` prints it at launch.
-- **Instructions:** `~/.agent-run/instructions.md` is copied into the temp
-  folder and mounted read-only where the agent's CLI loads its global
-  instructions (the `case` in `bin/agent`). Links in that path are refused,
-  since the agent's home is writable.
-- **Global gitignore:** the host's global ignore file (`core.excludesFile`,
-  else Git's default) is copied into the temp folder and mounted read-only,
-  with `GIT_CONFIG_*` pointing the container's Git at it.
-- **Report:** after the run, an advisory report (`find -P`, not Git, so
-  `.gitignore` can't hide anything) lists nested `.git` entries and created,
-  changed or deleted files that host tools load.
-
-### `bin/agent` flow
-
-1. **Preflight:** resolve the launcher root, canonicalize the workspace,
-   require a real `.git` directory and a rootless connection, check the
-   protected folders, refuse overlapping mounts.
-2. Create the temp folder (it must not overlap any mount) and run the Git
-   guard, which fails closed if Git can't read its config.
-3. Install build tools under a per-agent lock.
-4. Take the memory lock and quarantine memory.
-5. From the launcher root, start the proxy, snapshot the workspace, and run
-   Compose as a background child; release the memory lock once the container
-   exists.
-6. On exit or signal: stop the container, quarantine memory, print the
-   report, exit with the container's status (or 128+N).
-
-## Invariants: do not regress these
-
-- Agents never see or change an existing `.signing` or `local.properties`,
-  and never change an existing `.idea`, including through hard links.
-- Agents never write to the host's Gradle state folders found at launch.
-- Host Git never loads hooks or includes from agent-writable files, in the
-  workspace or the memory repository. For command settings this is best
-  effort; don't widen that claim.
-- Containers always run rootless in a user namespace, with a read-only root,
-  no capabilities, `no-new-privileges` and resource limits.
-- Agents never get write access to `.git`, `bin/agent`, `compose.yaml`,
-  `proxy/` or any host path outside the declared mounts.
-- No writable mount overlaps another mount or the launcher root. Compare
-  canonical paths, never names.
-- Libraries are sourced only from the resolved launcher root.
-- Memory's `.git` is trusted only when it matches the `trust-memory` record.
-- The quarantine never moves files on the host.
-- Allowlists never match by reverse DNS (`dstdomain -n`), stay minimal, and
-  prefer exact hosts. Agents never reach `proxy-tools` hosts (GitHub), and
-  reach `api.github.com` only through the relay.
-- The relay never forwards anything but GET and HEAD, anywhere but
-  `api.github.com`, and never turns off certificate verification.
-- Tools are installed only from a lockfile or checksum; the tool volume is
-  read-only for agents.
-- Containers with write access to shared tool volumes (`/mise`, `/android`,
-  the distribution cache) or network never run code or config an agent can
-  write: mise configs only as approved by `agent trust-tools`, Gradle
-  distributions only Gradle's own, verified.
-- agent-run never configures the project's runtimes or build settings.
-- Workspace files can't influence the launch: keep `--env-file /dev/null` and
-  the `cd` to the launcher root.
-- The host never runs `git` in an agent-writable repository.
-- No secrets in images, compose files, knowledge or memory.
-- Everything is pinned; npm install scripts never run.
-
-## Tool behavior the code relies on
-
-- podman-compose loads `.env` from the compose file's directory and the
-  current directory; `--env-file /dev/null` disables both.
-- podman-compose turns `- /tmp` into a named volume that survives `--rm`, and
-  prefixes named volumes given to `run -v` with the project name. Volumes
-  therefore go through `--podman-run-args --mount …`.
-- `--podman-run-args` also applies to dependencies, so the proxy is started
-  separately and the agent runs with `--no-deps`.
-- With `--userns keep-id`, Podman's read-only tmpfs covers a `/tmp` volume;
-  hence `--read-only-tmpfs=false` and an explicit `/dev/shm`.
-- Rootful Podman ignores `--userns keep-id`, which is why rootful is refused.
-- Podman mounts a volume `subpath` only if it exists, so a helper container
-  creates them first. podman-compose splits `--podman-run-args` with `shlex`,
-  so mounts with workspace paths are single-quoted.
-- A missing bind-mount source is an error, so conditional mounts are added in
-  `bin/agent`, not `compose.yaml`.
-- Bash defers traps while a foreground child runs: Compose runs in the
-  background and the script `wait`s on it. `podman compose` prints
-  `Error: executing … exit status N` for any nonzero exit; it's noise.
-- `git config --show-origin` reports the repository's config as the relative
-  `file:.git/config`.
-- Squid's `dstdomain` matches a bare-IP `CONNECT` against its PTR name unless
-  the ACL has `-n`.
-- The Squid image (`ubuntu/squid`, LTS-based tags only) starts Squid through
-  pebble, which only forwards Squid's log with `--verbose`.
-- Squid's GnuTLS build (`ubuntu/squid`) doesn't verify an origin's certificate
-  and can't read from GitHub over TLS 1.3, which is why the relay is nginx.
-- nginx treats `\\` in a quoted string as one backslash; the relay's regex uses
-  `\x5c`. It also needs its temp paths under `/tmp` on a read-only root.
-- Podman sets `TERM=xterm` in a container, and CLIs detect the terminal from
-  its variables (Claude Code adapts to JetBrains terminals by
-  `TERMINAL_EMULATOR`), so `compose.yaml` passes the host's through.
-- Claude Code needs its postinstall script to put its binary in place; the
-  `Dockerfile` does that step itself. Remove it once Claude Code works with
-  `--ignore-scripts`.
-- Java ignores `HTTPS_PROXY`; `JAVA_TOOL_OPTIONS` reaches every JVM,
-  including Gradle's daemons and test workers. Each JVM prints a
-  "Picked up JAVA_TOOL_OPTIONS" line on stderr.
-- Gradle distributions on `services.gradle.org` redirect to GitHub, which
-  agents can't reach, so the install container downloads them. Gradle
-  publishes each one's SHA-256 at the same URL plus `.sha256`.
-- The Gradle wrapper uses an unpacked distribution without downloading or
-  checking it when its folder has the `<zip name>.ok` marker, so whatever
-  writes that folder decides what the wrapper runs.
-- `mise install` renders `exec(...)` templates in `[env]` and runs `[hooks]`
-  of a trusted config (`MISE_TRUSTED_CONFIG_PATHS`).
+|---|---|
+| `crates/policy` | Reads and validates `~/.agent-run/policy.toml` |
+| `crates/workspace` | Inspects a checkout: rule folders, settings roots, the host's Gradle state; the IntelliJ, Git config and engram checks |
+| `crates/mountplan` | The mount plan, its Podman arguments and hash, and the verification of a gated container |
+| `crates/gate` | The container entrypoint that holds the command until the mounts are verified (Linux, static) |
+| `crates/podman` | The only code that runs Podman; the shared-service type and the namespace of all names |
+| `crates/pod` | A project pod's lifecycle, its names and the plan it started with |
+| `crates/egress` | The egress proxy's configuration, and the denials in its log |
+| `crates/approvals` | Approved destinations: what `allow` and `revoke` change, session approvals, policy edits |
+| `crates/relay` | The GitHub relay's repository map |
+| `crates/mirror` | The dependency mirror's configuration and allowlist |
+| `crates/agents` | Each agent CLI's conventions: its command line with the session's MCP servers, its global instructions, its files |
+| `crates/sessions` | An agent session's container: host mounts, environment, Podman arguments; knows no CLI |
+| `crates/builds` | The build container: volumes, settings, Podman arguments |
+| `crates/vision` | A session's display and browser in the build container, and its MCP entry |
+| `crates/engram` | A project's engram service: its container, socket, the agent's read-only mounts, the save on the host |
+| `crates/buildrun` | `gradle-run` and its server in the build container (Linux, static) |
+| `crates/agent` | The launcher: runs the steps in order, prints progress; `services.rs` wires the shared services |
+| `bin/agent` | Builds and runs the launcher |
+| `image/` | The agent image (`Containerfile`, built with the gate and `gradle-run`) |
+| `build-image/` | The build image: JDKs, the gate, `gradle-run-server`, the init scripts, each session's display and browser (`agent-run-display`, `browser-mcp`) |
+| `agents/<agent>/` | The agent CLI's pinned `package.json` and `package-lock.json` |
+| `proxy/` | The Squid image; `github-relay/` the relay's, `mirror/` the mirror's |
+| `docs/` | Architecture, threat model and security guarantees |
+| `.github/` | Dependabot's configuration and CI |
 
 ## Conventions
 
-- Bash 3.2 (macOS `/bin/bash`): no associative arrays, `mapfile`, `${var,,}`
-  or `local -n`. `set -euo pipefail` in `bin/agent` and test runners only.
-- In `bin/agent` and `lib/`, no pipeline ends in a reader that stops early
-  (`head`, `grep -m`, `awk … exit`): under `pipefail` the writer's SIGPIPE
-  fails it, silently inside `$(…)`. Write to a file and read that instead.
-- Libraries define functions and constants only. Functions take inputs as
-  arguments; a function producing a list sets a documented output variable.
-  Never call a function that may `die` inside `$(…)`.
-- Pass canonical paths into libraries; they compare paths as strings.
-- Handle paths NUL-delimited and print them with `printf '%q'`.
-- Every behavior change gets a unit test, or an integration check if it needs
-  Podman.
-- Short comments that explain *why*. No derived or guessed settings: leave
-  configuration to the tool that owns it.
-- One agent per image and service. Adding an agent touches `agents/<agent>/`,
-  `compose.yaml`, `proxy/allowlists/<agent>.txt`, the `case`s in `bin/agent`,
-  `.github/dependabot.yml` and the README.
+- One crate per problem, with one job and a narrow interface; the launcher only
+  orchestrates and holds no problem-specific logic.
+- No async runtime, the `podman` CLI rather than an API client, and few dependencies,
+  each with a reason.
+- Errors are messages for the user: name the path, key or value and what to do.
+- Paths compare as canonical paths, never by name. Paths Podman's arguments can't carry
+  safely (`,`, `:`, tabs, newlines) are refused, not escaped.
+- Mounts protect folders only: on a case-insensitive checkout, a mount over a single file
+  is bypassed through another spelling.
+- Write files the VM shares in place; a file renamed over another shows as missing in
+  containers for seconds.
+- Shared code is extracted, not copied: a new service is its crate plus one entry in
+  `crates/agent/src/services.rs`; Podman object names come from the namespace.
+- Short comments that explain why.
+- Formatted with `cargo fmt --all` (rustfmt's defaults) before every change is done.
 
 ## Testing
 
 ```sh
-tests/run.sh                 # unit tests, no Podman
-tests/run.sh git_guard       # one suite
-tests/integration.sh         # against the Podman machine; needs the claude image
+cargo test                                  # unit tests, no Podman
+cargo test -p podman -p mountplan -p pod -p egress -p relay -p mirror -p vision -p builds -p engram -p agent -- --ignored   # local release gate; fixtures required below
+cargo clippy --all-targets
+cargo fmt --all --check                     # code is formatted with rustfmt's defaults
 ```
 
-- Unit tests run each `test_*` in a subshell with a scratch folder `$T`, a
-  scratch `HOME` and no user Git config. Helpers are in `tests/helpers.sh`.
-- Integration checks use scratch repositories and a scratch `HOME`, and the
-  real `agent-run-claude-*` tool volumes.
+CI (`.github/workflows/ci.yml`) runs formatting, clippy and the unit tests on macOS, checks
+the oldest supported Rust (`rust-version`), and builds every image on arm64 Linux. Image
+smoke tests exercise the gate hold/release protocol, agent CLI startup, Java majors,
+Playwright/Chromium rendering and infrastructure runtime binaries.
+
+### Local release gate
+
+Before accepting a release or dependency update, run the ignored Podman suites above on
+macOS Apple Silicon with rootless krunkit/libkrun. Use disposable checkouts, scratch state
+and isolated namespaces, never personal credentials or the real `~/.agent-run`. Explicitly
+set `AGENT_RUN_TEST_ENGRAM_CORE` to a disposable, built fixture and
+`AGENT_RUN_TEST_WRAPPER_FROM` to a disposable checkout containing a Gradle wrapper before
+running; do not use the engram tests' personal-directory defaults.
+
+Record the tested revision, OS/Podman/provider, exact commands and results. Include mount
+and case-alias protection, authenticated egress/revocation, lifecycle/rollback, multi-project
+service recovery, builds, licenses and resource limits. Record missing fixtures and skipped
+suites as verification gaps.
+
+### Test setup
+
+- A crate's own behavior is tested in the crate (`crates/<crate>/tests`); `crates/agent/tests`
+  holds only what needs a whole session: the protections, the commands, and how the crates
+  work together.
+- Podman tests are `#[ignore]` and need the Podman machine. They use
+  `localhost/agent-run-gate` (`podman build -t localhost/agent-run-gate -f
+  crates/gate/Containerfile --ignorefile crates/gate/Containerfile.ignore .`), an agent
+  image (`AGENT_RUN_TEST_IMAGE`, default `localhost/agent-run-claude`), and for egress the
+  internet. The relay's test needs `localhost/agent-run-github-relay` (`podman build -t
+  localhost/agent-run-github-relay proxy/github-relay`), the mirror's
+  `localhost/agent-run-mirror` (`proxy/mirror`). The agent's suites start real sessions with
+  `tests/common` (a scratch home and namespace, removed afterwards) and build the images if
+  they're missing; `builds` also needs `AGENT_RUN_TEST_WRAPPER_FROM`, a checkout to copy a
+  Gradle wrapper from, and `agents` builds the Codex, Gemini and Pi images; the engram tests
+  copy engram-core with its built server; `cli` runs the public `agent` command, `rollback`
+  injects failures after each start step (`AGENT_RUN_FAIL_AFTER`, in that test binary only)
+  (`AGENT_RUN_TEST_ENGRAM_CORE`). `podman`, `vision` and `engram` use the build image.
 - Check that a new test can fail: break the code, run it, restore the code.
-- Try things by hand only in throwaway locations, never in the user's
-  repositories or `~/.agent-run`, and use a fresh path per Podman run (a
-  recreated path can leave the VM's file share stale).
-- `shellcheck` isn't available; run `bash -n` on `bin/agent` and `lib/*.sh`.
+- Try the launcher only on throwaway checkouts, with `AGENT_RUN_HOME` pointing at a scratch
+  folder instead of `~/.agent-run`.
 
 ## Git hygiene
 
 - Don't commit unless asked.
-- Never add generated files, test fixtures, or anything under `workspace/`
-  except `.gitkeep`.
+- Never add generated files or test fixtures.

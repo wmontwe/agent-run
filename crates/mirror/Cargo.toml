@@ -1,0 +1,14 @@
+[package]
+name = "mirror"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "The Reposilite mirror: Maven repositories, Gradle distributions and the Android SDK for builds."
+
+[dependencies]
+podman = { path = "../podman" }
+
+[dev-dependencies]
+egress = { path = "../egress" }
+policy = { path = "../policy" }
