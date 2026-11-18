@@ -31,6 +31,7 @@ case "$name" in
         gate /usr/local/bin/agent-run-gate
         cli=${name#agent-}
         run "/opt/agent/node_modules/.bin/$cli" --version
+        run /bin/sh -c 'command -v cargo-run && command -v kotlin-run && ! command -v cargo && ! command -v rustc && ! command -v java'
         ;;
     build)
         gate /usr/local/bin/agent-run-gate
@@ -39,6 +40,22 @@ case "$name" in
             printf '%s\n' "$output"
             printf '%s\n' "$output" | grep -E "java.specification.version = $major$"
         done
+        # Compose Desktop's Skiko loads EGL (Compose tests in Kotlin Toolchain builds).
+        run sh -c 'ldconfig -p | grep -q "libEGL.so.1 "'
+        # Compile, test, format and lint without network or writable image toolchains.
+        podman run --rm --network none --read-only --tmpfs /tmp:rw,exec \
+            --entrypoint /bin/sh "$image" -ec '
+                export CARGO_HOME=/tmp/cargo CARGO_TARGET_DIR=/tmp/target
+                mkdir -p /tmp/smoke/src
+                cd /tmp/smoke
+                printf "[package]\nname = \"rust-smoke\"\nversion = \"0.1.0\"\nedition = \"2024\"\n" > Cargo.toml
+                printf "fn main() {\n    println!(\"rust smoke\");\n}\n" > src/main.rs
+                cargo --version
+                rustc --version
+                cargo test --offline
+                cargo fmt --all --check
+                cargo clippy --offline --all-targets -- -D warnings
+            '
         run node /opt/browser/node_modules/@playwright/mcp/cli.js --help
         # Exercise Playwright's packaged runtime and the system Chromium without downloads.
         run node -e '

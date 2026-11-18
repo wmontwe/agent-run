@@ -140,6 +140,9 @@ pub fn checkouts(podman: &Podman, namespace: &Namespace) -> Result<Vec<PathBuf>,
 
 /// The state volume's subpath for the build state (build folders, project cache).
 pub const BUILD_STATE: &str = "build";
+/// The state volume's subpath for the build container's home: tools that write under `~`
+/// (`~/.android`, `~/.m2`, `~/.local`, the JVM's `user.home`) work. Agents don't see it.
+pub const BUILD_HOME: &str = "home";
 
 #[derive(Debug)]
 pub enum PodError {
@@ -243,7 +246,7 @@ pub fn ensure(
     }
     project.volume(podman, &project.state_volume())?;
     let mut subpaths = fresh.subpaths();
-    subpaths.push(BUILD_STATE);
+    subpaths.extend([BUILD_STATE, BUILD_HOME]);
     {
         // Podman mounts a volume subpath only if it exists.
         let mut args: Vec<String> = [

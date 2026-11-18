@@ -1,23 +1,53 @@
-//! `gradle-run`: agents run the project's Gradle
-//! wrapper in the project's build container, which listens on the pod's `localhost`.
+//! Agents run builds in the project's build container, on the pod's `localhost`.
 //!
-//! The protocol is line-based. The client sends `gradle-run 1`, then `cwd`, `display` and
+//! The protocol is line-based. The client sends a versioned `gradle-run`, `cargo-run` or
+//! `kotlin-run` greeting, then `cwd`, `display` and
 //! `arg` fields (`key\tvalue`, values escaped), then `run`. The server answers with frames:
 //! `out <n>` or `err <n>` followed by n bytes, and finally `exit <code>`. A client that
 //! disconnects cancels its build.
 
+mod cargo;
+pub mod client;
+pub mod kotlin;
 pub mod server;
+pub mod trust;
 pub mod wrapper;
 
 use std::io::{self, BufRead, Write};
 
 /// Where the build server listens: the pod's loopback, shared by its containers.
 pub const DEFAULT_PORT: u16 = 7300;
-const HELLO: &str = "gradle-run 1";
+/// A build backend, not a caller-supplied executable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Tool {
+    #[default]
+    Gradle,
+    Cargo,
+    Kotlin,
+}
+
+impl Tool {
+    pub fn client(self) -> &'static str {
+        match self {
+            Self::Gradle => "gradle-run",
+            Self::Cargo => "cargo-run",
+            Self::Kotlin => "kotlin-run",
+        }
+    }
+
+    fn hello(self) -> &'static str {
+        match self {
+            Self::Gradle => "gradle-run 1",
+            Self::Cargo => "cargo-run 1",
+            Self::Kotlin => "kotlin-run 1",
+        }
+    }
+}
 
 /// What a client asks for.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Request {
+    pub tool: Tool,
     pub cwd: String,
     pub display: Option<String>,
     pub args: Vec<String>,
@@ -40,7 +70,7 @@ fn unescape(value: &str) -> String {
 }
 
 pub fn write_request(out: &mut impl Write, request: &Request) -> io::Result<()> {
-    let mut text = format!("{HELLO}\ncwd\t{}\n", escape(&request.cwd));
+    let mut text = format!("{}\ncwd\t{}\n", request.tool.hello(), escape(&request.cwd));
     if let Some(display) = &request.display {
         text += &format!("display\t{}\n", escape(display));
     }
@@ -59,13 +89,16 @@ fn invalid(message: impl Into<String>) -> io::Error {
 pub fn read_request(input: &mut impl BufRead) -> io::Result<Request> {
     let mut line = String::new();
     input.read_line(&mut line)?;
-    if line.trim_end() != HELLO {
-        return Err(invalid(format!(
-            "not a gradle-run request: {:?}",
-            line.trim_end()
-        )));
-    }
-    let mut request = Request::default();
+    let tool = match line.trim_end() {
+        "gradle-run 1" => Tool::Gradle,
+        "cargo-run 1" => Tool::Cargo,
+        "kotlin-run 1" => Tool::Kotlin,
+        other => return Err(invalid(format!("unsupported build request: {other:?}"))),
+    };
+    let mut request = Request {
+        tool,
+        ..Request::default()
+    };
     loop {
         line.clear();
         if input.read_line(&mut line)? == 0 {
@@ -147,6 +180,7 @@ mod tests {
     #[test]
     fn requests_survive_any_argument() {
         let request = Request {
+            tool: Tool::Gradle,
             cwd: "/work/app\twith tab".into(),
             display: Some(":1".into()),
             args: vec![
@@ -164,6 +198,55 @@ mod tests {
             read_request(&mut "gradle-run 1\ncwd\t/x\n".as_bytes()).is_err(),
             "no run line"
         );
+    }
+
+    #[test]
+    fn cargo_has_its_own_protocol_and_preserves_argument_boundaries() {
+        let request = Request {
+            tool: Tool::Cargo,
+            cwd: "/work/λ".into(),
+            display: None,
+            args: vec![
+                "+1.99.1".into(),
+                "test".into(),
+                "".into(),
+                "a\tb\nc%0A".into(),
+            ],
+        };
+        let mut wire = Vec::new();
+        write_request(&mut wire, &request).unwrap();
+        assert!(wire.starts_with(b"cargo-run 1\n"));
+        assert_eq!(read_request(&mut wire.as_slice()).unwrap(), request);
+        assert!(read_request(&mut b"cargo-run 2\nrun\n".as_slice()).is_err());
+        assert!(read_request(&mut b"sh 1\nrun\n".as_slice()).is_err());
+        assert_eq!(
+            read_request(&mut b"gradle-run 1\ncwd\t/work\nrun\n".as_slice())
+                .unwrap()
+                .tool,
+            Tool::Gradle
+        );
+    }
+
+    #[test]
+    fn kotlin_requests_are_distinct_and_preserve_plugin_arguments() {
+        let request = Request {
+            tool: Tool::Kotlin,
+            cwd: "/work/project".into(),
+            display: Some(":3".into()),
+            args: vec![
+                "do".into(),
+                "custom".into(),
+                "--module".into(),
+                "a b".into(),
+                "".into(),
+                "λ\t%".into(),
+            ],
+        };
+        let mut wire = Vec::new();
+        write_request(&mut wire, &request).unwrap();
+        assert!(wire.starts_with(b"kotlin-run 1\n"));
+        assert_eq!(read_request(&mut wire.as_slice()).unwrap(), request);
+        assert!(read_request(&mut b"kotlin-run 2\nrun\n".as_slice()).is_err());
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! The build container's side: one server per project, at most `max_concurrent` builds at
 //! once, each with the container's fixed build settings plus request arguments.
 
-use crate::{Frame, Request, read_request, wrapper, write_frame};
+use crate::{Frame, Request, Tool, cargo, kotlin, read_request, wrapper, write_frame};
 use std::io::{BufReader, Read};
 use std::net::TcpStream;
 use std::os::unix::process::CommandExt;
@@ -21,14 +21,18 @@ pub struct Config {
     pub gradle_home: PathBuf,
     /// The build state volume: build folders, project cache, Kotlin's state.
     pub build_state: PathBuf,
-    /// Base URL of the mirror, such as `http://mirror:8080`.
+    /// Base URL of the mirror, such as `https://mirror:8443`.
     pub mirror: String,
     /// The image's JDKs, for `org.gradle.java.installations.paths`.
     pub jdks: Vec<PathBuf>,
     /// Folder of the init scripts.
     pub init_scripts: PathBuf,
     pub max_concurrent: usize,
-    /// Runs instead of the wrapper (tests: a stand-in build).
+    /// agent-run's authority for the mirror's HTTPS ([`crate::trust::CA`]); absent in tests.
+    pub mirror_ca: Option<PathBuf>,
+    /// The mirror's remotes, `(id, upstream URL)`, from the policy.
+    pub mirror_remotes: Vec<(String, String)>,
+    /// Runs instead of Gradle/Cargo (tests); Kotlin fixtures supply their project wrapper.
     pub command: Option<PathBuf>,
 }
 
@@ -50,6 +54,8 @@ impl Config {
                 .parse()
                 .map_err(|_| "AGENT_RUN_MAX_CONCURRENT: not a number".to_owned())?,
             command: std::env::var_os("AGENT_RUN_BUILD_COMMAND").map(PathBuf::from),
+            mirror_ca: std::env::var_os("AGENT_RUN_MIRROR_CA").map(PathBuf::from),
+            mirror_remotes: remotes(&std::env::var("AGENT_RUN_MIRROR_REMOTES").unwrap_or_default()),
         })
     }
 
@@ -76,19 +82,22 @@ impl Config {
         ]
     }
 
-    /// The environment every build gets, besides the container's.
+    /// The environment every build gets, besides the container's. Android's user folder is
+    /// `~/.android`, in the container's writable home.
     pub fn environment(&self) -> Vec<(String, String)> {
-        vec![
-            (
-                "ANDROID_USER_HOME".into(),
-                self.build_state.join("android-user").display().to_string(),
-            ),
-            (
-                "SDK_TEST_BASE_URL".into(),
-                format!("{}/android-sdk/", self.mirror.trim_end_matches('/')),
-            ),
-        ]
+        vec![(
+            "SDK_TEST_BASE_URL".into(),
+            format!("{}/android-sdk/", self.mirror.trim_end_matches('/')),
+        )]
     }
+}
+
+/// `id=url,id=url`, as the launcher passes the policy's mirror remotes.
+fn remotes(text: &str) -> Vec<(String, String)> {
+    text.split(',')
+        .filter_map(|entry| entry.split_once('='))
+        .map(|(id, url)| (id.to_owned(), url.to_owned()))
+        .collect()
 }
 
 /// At most `max` builds at once; the others wait.
@@ -142,19 +151,7 @@ impl Drop for Slot<'_> {
 /// The folder with the wrapper for a build started in `cwd`: the nearest one up to the
 /// checkout's root, as running `gradlew` from a subfolder would find.
 pub fn wrapper_root(workspace: &Path, cwd: &Path) -> Result<PathBuf, String> {
-    let cwd = cwd
-        .canonicalize()
-        .map_err(|e| format!("{}: {e}", cwd.display()))?;
-    let workspace = workspace
-        .canonicalize()
-        .map_err(|e| format!("{}: {e}", workspace.display()))?;
-    if !cwd.starts_with(&workspace) {
-        return Err(format!(
-            "{} is outside the checkout {}",
-            cwd.display(),
-            workspace.display()
-        ));
-    }
+    let (workspace, cwd) = checked_cwd(workspace, cwd)?;
     let mut folder = cwd.as_path();
     loop {
         if folder.join("gradlew").is_file() {
@@ -170,6 +167,23 @@ pub fn wrapper_root(workspace: &Path, cwd: &Path) -> Result<PathBuf, String> {
     }
 }
 
+pub(crate) fn checked_cwd(workspace: &Path, cwd: &Path) -> Result<(PathBuf, PathBuf), String> {
+    let cwd = cwd
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", cwd.display()))?;
+    let workspace = workspace
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", workspace.display()))?;
+    if !cwd.starts_with(&workspace) {
+        return Err(format!(
+            "{} is outside the checkout {}",
+            cwd.display(),
+            workspace.display()
+        ));
+    }
+    Ok((workspace, cwd))
+}
+
 /// Serves one connection: reads the request, runs the build, streams it back.
 pub fn handle(stream: TcpStream, config: &Config, queue: &Queue, installs: &Mutex<()>) {
     let Ok(reader) = stream.try_clone() else {
@@ -180,11 +194,22 @@ pub fn handle(stream: TcpStream, config: &Config, queue: &Queue, installs: &Mute
         let mut out = writer.lock().unwrap_or_else(|e| e.into_inner());
         let _ = write_frame(&mut *out, &frame);
     };
-    let say = |text: String| send(Frame::Err(format!("gradle-run: {text}\n").into_bytes()));
     let mut reader = BufReader::new(reader);
     let request = match read_request(&mut reader) {
         Ok(request) => request,
-        Err(e) => return say(format!("bad request: {e}")),
+        Err(e) => {
+            send(Frame::Err(
+                format!("build server: bad request: {e}; restart the project if its build image is outdated\n")
+                    .into_bytes(),
+            ));
+            send(Frame::Exit(1));
+            return;
+        }
+    };
+    let say = |text: String| {
+        send(Frame::Err(
+            format!("{}: {text}\n", request.tool.client()).into_bytes(),
+        ));
     };
     // The client disconnecting (Ctrl+C) cancels: nothing else arrives after the request.
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -215,8 +240,12 @@ fn run(
     send: &(dyn Fn(Frame) + Sync),
     say: &(dyn Fn(String) + Sync),
 ) -> Result<i32, String> {
-    let cwd = PathBuf::from(&request.cwd);
-    let root = wrapper_root(&config.workspace, &cwd)?;
+    let (workspace, cwd) = checked_cwd(&config.workspace, Path::new(&request.cwd))?;
+    let root = match request.tool {
+        Tool::Gradle => wrapper_root(&workspace, &cwd)?,
+        Tool::Cargo => workspace.clone(),
+        Tool::Kotlin => kotlin::wrapper_root(&workspace, &cwd)?,
+    };
     let Some(_slot) = queue.enter(cancelled, |running| {
         say(format!(
             "waiting: {running} build(s) of this project running (builds.max-concurrent = {})",
@@ -225,7 +254,7 @@ fn run(
     }) else {
         return Ok(130);
     };
-    if config.command.is_none() {
+    if request.tool == Tool::Gradle && config.command.is_none() {
         // One install at a time; a cancelled request stops waiting, and stops installing.
         let _one = loop {
             match installs.try_lock() {
@@ -248,18 +277,38 @@ fn run(
     if cancelled.load(Ordering::SeqCst) {
         return Ok(130);
     }
-    let mut command = match &config.command {
-        Some(stand_in) => Command::new(stand_in),
-        None => {
-            let mut c = Command::new(root.join("gradlew"));
-            c.args(config.options());
-            c
+    let mut command = if request.tool == Tool::Kotlin {
+        let (downloads, missing) = kotlin::downloads(&config.mirror, &config.mirror_remotes);
+        for upstream in missing {
+            say(format!(
+                "no mirror remote for {upstream} in the policy's mirror.remotes: Kotlin Toolchain can't download from it"
+            ));
+        }
+        kotlin::command(&workspace, &config.build_state, &cwd, &[], &downloads)?
+    } else {
+        match &config.command {
+            Some(stand_in) => Command::new(stand_in),
+            None => match request.tool {
+                Tool::Gradle => {
+                    let mut c = Command::new(root.join("gradlew"));
+                    c.args(config.options());
+                    c
+                }
+                Tool::Cargo => Command::new("/opt/cargo/bin/cargo"),
+                Tool::Kotlin => unreachable!("Kotlin command prepared above"),
+            },
         }
     };
+    match request.tool {
+        Tool::Gradle => {
+            command.envs(config.environment());
+        }
+        Tool::Cargo => cargo::configure(&mut command, &workspace, &config.build_state, &cwd),
+        Tool::Kotlin => {}
+    }
     command
         .args(&request.args)
         .current_dir(&cwd)
-        .envs(config.environment())
         .stdin(Stdio::null());
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     match &request.display {
@@ -269,9 +318,12 @@ fn run(
     // Its own process group: what the build starts goes with it. Gradle's daemons leave the
     // group (they detach), so the project's shared daemons stay.
     command.process_group(0);
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("starting the build: {e}"))?;
+    let mut child = command.spawn().map_err(|e| {
+        format!(
+            "starting {}: {e}; if the build image is outdated, run `agent restart`",
+            request.tool.client()
+        )
+    })?;
     let group = child.id() as i32;
     let (output, received) = mpsc::channel();
     for (pipe, is_out) in [
@@ -310,13 +362,8 @@ fn run(
         });
     }
     drop(output);
-    let forward = |until: Duration| {
-        while let Ok(frame) = received.recv_timeout(until) {
-            send(frame);
-        }
-    };
     let status = loop {
-        forward(Duration::from_millis(50));
+        forward_for(&received, Duration::from_millis(50), send);
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
             Ok(None) => {}
@@ -339,33 +386,38 @@ fn run(
     Ok(status?.code().unwrap_or(130))
 }
 
+// A busy output stream must not postpone cancellation until it becomes quiet.
+fn forward_for(received: &mpsc::Receiver<Frame>, until: Duration, send: &(dyn Fn(Frame) + Sync)) {
+    let deadline = Instant::now() + until;
+    while Instant::now() < deadline {
+        match received.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(frame) => send(frame),
+            Err(_) => break,
+        }
+    }
+}
+
 /// A build's process group.
 mod group {
-    unsafe extern "C" {
-        #[link_name = "kill"]
-        fn sys_kill(pid: i32, signal: i32) -> i32;
-        fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
-    }
-    const SIGKILL: i32 = 9;
-    const WNOHANG: i32 = 1;
+    use rustix::process::{Pid, Signal, WaitOptions, kill_process_group, waitpgid};
 
     pub fn kill(group: i32) {
-        // Safety: a plain system call on the build's own group (its leader's id).
-        unsafe {
-            sys_kill(-group, SIGKILL);
+        if let Some(group) = Pid::from_raw(group) {
+            let _ = kill_process_group(group, Signal::KILL);
         }
     }
 
     /// Collects the group's processes that became the server's (it's the container's first
     /// process), so they don't stay as zombies. Nothing to collect elsewhere.
     pub fn reap(group: i32) {
+        let Some(group) = Pid::from_raw(group) else {
+            return;
+        };
         for _ in 0..20 {
-            let mut status = 0;
-            // Safety: waits only for the build's own group, without blocking.
-            match unsafe { waitpid(-group, &mut status, WNOHANG) } {
-                pid if pid > 0 => continue,
-                0 => std::thread::sleep(std::time::Duration::from_millis(50)),
-                _ => return,
+            match waitpgid(group, WaitOptions::NOHANG) {
+                Ok(Some(_)) => continue,
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                Err(_) => return,
             }
         }
     }
@@ -376,6 +428,21 @@ mod tests {
     use super::*;
     use std::fs;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn continuous_output_yields_to_status_and_cancellation_checks() {
+        let (output, received) = mpsc::channel();
+        for _ in 0..30 {
+            output.send(Frame::Out(vec![b'x'])).unwrap();
+        }
+        forward_for(&received, Duration::from_millis(10), &|_| {
+            thread::sleep(Duration::from_millis(2));
+        });
+        assert!(
+            received.try_recv().is_ok(),
+            "forwarding drained a busy stream without yielding"
+        );
+    }
 
     #[test]
     fn finds_the_nearest_wrapper_inside_the_checkout() {
@@ -441,11 +508,13 @@ mod tests {
             workspace: "/w".into(),
             gradle_home: "/gradle".into(),
             build_state: "/build-state".into(),
-            mirror: "http://mirror:8080".into(),
+            mirror: "https://mirror:8443".into(),
             jdks: vec!["/opt/jdk/17".into(), "/opt/jdk/21".into()],
             init_scripts: "/etc/agent-run".into(),
             max_concurrent: 1,
             command: None,
+            mirror_ca: None,
+            mirror_remotes: remotes("central=https://repo.maven.apache.org/maven2"),
         };
         let options = config.options().join(" ");
         assert!(options.contains("--no-problems-report"));
@@ -456,11 +525,8 @@ mod tests {
         let env = config.environment();
         assert!(env.contains(&(
             "SDK_TEST_BASE_URL".into(),
-            "http://mirror:8080/android-sdk/".into()
+            "https://mirror:8443/android-sdk/".into()
         )));
-        assert!(env.contains(&(
-            "ANDROID_USER_HOME".into(),
-            "/build-state/android-user".into()
-        )));
+        assert!(!env.iter().any(|(key, _)| key == "ANDROID_USER_HOME"));
     }
 }

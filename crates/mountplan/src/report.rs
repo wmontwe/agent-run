@@ -3,8 +3,10 @@
 //!
 //! ```text
 //! mount <line of /proc/self/mountinfo>
-//! target <index> <dev> <ino>      (or `target <index> - -` if missing)
+//! target <index> <dev> <ino> <entries>   (or `target <index> - - -` if missing)
 //! ```
+//!
+//! `entries` is how many entries the target lists, `-` if it isn't a folder it can list.
 
 /// One line of `/proc/self/mountinfo`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +28,8 @@ impl MountInfo {
 pub struct TargetStat {
     pub dev: u64,
     pub ino: u64,
+    /// Entries of a folder the container can list; `None` for a file or an unreadable folder.
+    pub entries: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -89,7 +93,7 @@ pub fn parse_report(text: &str, target_count: usize) -> Result<Report, String> {
                 .push(parse_mountinfo_line(rest).ok_or_else(|| format!("bad mount line: {rest}"))?);
         } else if let Some(rest) = line.strip_prefix("target ") {
             let parts: Vec<&str> = rest.split_whitespace().collect();
-            let [index, dev, ino] = parts[..] else {
+            let [index, dev, ino, entries] = parts[..] else {
                 return Err(format!("bad target line: {rest}"));
             };
             let index: usize = index
@@ -101,7 +105,11 @@ pub fn parse_report(text: &str, target_count: usize) -> Result<Report, String> {
             if dev != "-" {
                 let dev = dev.parse().map_err(|_| format!("bad dev: {dev}"))?;
                 let ino = ino.parse().map_err(|_| format!("bad ino: {ino}"))?;
-                report.targets[index] = Some(TargetStat { dev, ino });
+                let entries = match entries {
+                    "-" => None,
+                    n => Some(n.parse().map_err(|_| format!("bad entries: {n}"))?),
+                };
+                report.targets[index] = Some(TargetStat { dev, ino, entries });
             }
         } else if !line.is_empty() {
             return Err(format!("unexpected report line: {line}"));
@@ -126,17 +134,33 @@ mod tests {
 
     #[test]
     fn parses_targets_and_missing_ones() {
-        let report = parse_report("target 0 64 99\ntarget 1 - -\n", 2).unwrap();
+        let report =
+            parse_report("target 0 64 99 3\ntarget 1 64 7 -\ntarget 2 - - -\n", 3).unwrap();
         assert_eq!(
             report.targets,
-            vec![Some(TargetStat { dev: 64, ino: 99 }), None]
+            vec![
+                Some(TargetStat {
+                    dev: 64,
+                    ino: 99,
+                    entries: Some(3)
+                }),
+                Some(TargetStat {
+                    dev: 64,
+                    ino: 7,
+                    entries: None
+                }),
+                None
+            ]
         );
     }
 
     #[test]
     fn rejects_unexpected_lines_and_indexes() {
         assert!(parse_report("hello\n", 1).is_err());
-        assert!(parse_report("target 5 1 1\n", 1).is_err());
+        assert!(parse_report("target 5 1 1 0\n", 1).is_err());
+        // The gate's older three-field form: the launcher needs the entries.
+        assert!(parse_report("target 0 1 1\n", 1).is_err());
+        assert!(parse_report("target 0 1 1 x\n", 1).is_err());
         assert!(parse_report("mount garbage\n", 1).is_err());
     }
 }

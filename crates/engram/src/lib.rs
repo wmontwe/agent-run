@@ -212,13 +212,21 @@ impl Engram {
         args
     }
 
-    /// What an agent's container gets: the socket, and the package's instructions, skills and
-    /// memory read-only at their host paths, so the checkout's engram links resolve.
+    /// What an agent's container gets: the socket, and [`Engram::link_mounts`].
     pub fn agent_args(&self, project: &Project) -> Vec<String> {
         let mut args = vec![
             "-v".into(),
             format!("{}:{SOCKET_DIR}:z", project.engram_volume()),
         ];
+        args.extend(self.link_mounts());
+        args
+    }
+
+    /// The package's instructions, skills and memory read-only at their host paths, so the
+    /// checkout's engram links resolve in every container that mounts the checkout (a dangling
+    /// link fails builds that read the checkout's files, such as Gradle's input snapshots).
+    pub fn link_mounts(&self) -> Vec<String> {
+        let mut args = Vec::new();
         let template = self.core().join("templates/CLAUDE.local.md");
         // Every entry engram links into checkouts, for every agent; not .mcp.json, whose
         // server is the host's.
@@ -466,6 +474,11 @@ mod tests {
             "{args}"
         );
         assert!(!args.contains(".claude"), "only what exists");
+        let links = engram.link_mounts().join(" ");
+        assert!(
+            args.contains(&links) && !links.contains(SOCKET_DIR),
+            "builds get the links without the socket: {links}"
+        );
         let _ = fs::remove_dir_all(root.parent().unwrap());
     }
 

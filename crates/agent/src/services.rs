@@ -11,6 +11,9 @@ use podman::{Podman, Service};
 use policy::{Destination, Policy};
 use relay::Relay;
 
+#[cfg(test)]
+mod tests;
+
 pub struct Services<'a> {
     pub proxy: Egress<'a>,
     pub relay: Relay<'a>,
@@ -35,6 +38,7 @@ impl<'a> Services<'a> {
                 service: mirror::service(podman, ns, state),
                 volume: ns.name("mirror-data"),
                 image: images::MIRROR,
+                tls: mirror_tls(paths),
             },
             podman,
         }
@@ -52,7 +56,7 @@ impl<'a> Services<'a> {
     pub fn start(&self, policy: &Policy, paths: &Paths, network: &str) -> Result<(), String> {
         let err = |e: podman::PodmanError| e.to_string();
         self.mirror.service.network().map_err(err)?;
-        self.rules(policy, paths)?;
+        self.rules(paths)?;
         self.proxy
             .service
             .connect(&self.mirror.service.network)
@@ -75,7 +79,9 @@ impl<'a> Services<'a> {
     /// Writes the proxy's rules: each of the namespace's pods gets its project's shared list,
     /// and each running session its agent's destinations and approvals in the project; the
     /// mirror its remotes' hosts.
-    pub fn rules(&self, policy: &Policy, paths: &Paths) -> Result<(), String> {
+    pub fn rules(&self, paths: &Paths) -> Result<(), String> {
+        // Session teardown must not restore grants from that session's startup snapshot.
+        let policy = paths.load_policy()?;
         let err = |e: &dyn std::fmt::Display| e.to_string();
         let mut pods = Vec::new();
         let mut passwords = Vec::new();
@@ -107,6 +113,18 @@ impl<'a> Services<'a> {
                     local: grants.local,
                 });
             }
+            if let Some(identity) = rules_build_identity(&build_credentials(
+                paths,
+                &project,
+                &build_generation(self.podman, &project)?,
+            )) {
+                passwords.push(identity.password_line);
+                sessions.push(egress::SessionEgress {
+                    user: identity.user,
+                    allow: policy.for_build(&checkout),
+                    local: vec![],
+                });
+            }
             pods.push(PodEgress {
                 subnet: egress::subnet(self.podman, &project.network()).map_err(|e| err(&e))?,
                 allow,
@@ -135,27 +153,25 @@ impl<'a> Services<'a> {
     /// A new session identity for `agent`: a random user and password, their htpasswd line kept
     /// while the session runs. Returns the user and the session's proxy URL.
     pub fn identity(paths: &Paths, agent: &str) -> Result<(String, String), String> {
-        let random = |bytes: usize| -> Result<String, String> {
-            let mut buffer = vec![0u8; bytes];
-            std::io::Read::read_exact(
-                &mut std::fs::File::open("/dev/urandom").map_err(|e| e.to_string())?,
-                &mut buffer,
-            )
-            .map_err(|e| e.to_string())?;
-            Ok(buffer.iter().map(|b| format!("{b:02x}")).collect())
-        };
-        let (password, salt) = (random(16)?, random(4)?);
-        let user = format!("{agent}-{}", random(6)?);
-        let file = credentials(paths, &user);
+        let identity = egress::Identity::new(agent)?;
+        let file = credentials(paths, &identity.user);
         std::fs::create_dir_all(file.parent().expect("in a folder")).map_err(|e| e.to_string())?;
-        std::fs::write(&file, egress::htpasswd_line(&user, &password, &salt))
+        std::fs::write(&file, &identity.password_line)
             .map_err(|e| format!("{}: {e}", file.display()))?;
-        let url = format!(
-            "http://{user}:{password}@{}:{}",
-            egress::ALIAS,
-            egress::PORT
-        );
-        Ok((user, url))
+        Ok((identity.user, identity.url))
+    }
+
+    /// A pod's build credentials are stable across sessions and never mounted into agents.
+    pub fn build_identity(
+        podman: &Podman,
+        paths: &Paths,
+        project: &Project,
+    ) -> Result<egress::Identity, String> {
+        build_identity_for_generation(paths, project, &build_generation(podman, project)?)
+    }
+
+    pub fn forget_build(paths: &Paths, project: &Project) {
+        let _ = std::fs::remove_dir_all(paths.state.join("build-proxies").join(&project.id));
     }
 
     /// Ends a session's identity.
@@ -163,9 +179,10 @@ impl<'a> Services<'a> {
         let _ = std::fs::remove_file(credentials(paths, user));
     }
 
-    /// Every session's proxy credentials, once no session runs.
+    /// Every proxy identity, once no sessions run.
     pub fn forget_all(paths: &Paths) {
         let _ = std::fs::remove_dir_all(paths.state.join("proxy-users"));
+        let _ = std::fs::remove_dir_all(paths.state.join("build-proxies"));
     }
 
     /// Takes every service off a pod's network, so the network can be removed.
@@ -177,15 +194,65 @@ impl<'a> Services<'a> {
     }
 }
 
+/// A pod's saved build identity, for the proxy rules of every project. One that doesn't load
+/// (written by an older agent-run, or damaged) costs only its own pod the build-only hosts, until
+/// that project is restarted; it mustn't stop the rules of the others, or `agent restart` itself.
+fn rules_build_identity(path: &std::path::Path) -> Option<egress::Identity> {
+    match egress::Identity::load(path, "build") {
+        Ok(identity) => identity,
+        Err(e) => {
+            eprintln!("agent-run: warning: {e}");
+            None
+        }
+    }
+}
+
+fn build_identity_for_generation(
+    paths: &Paths,
+    project: &Project,
+    generation: &str,
+) -> Result<egress::Identity, String> {
+    let path = build_credentials(paths, project, generation);
+    if let Some(identity) = egress::Identity::load(&path, "build")? {
+        return Ok(identity);
+    }
+    let identity = egress::Identity::new("build")?;
+    identity.save(&path)?;
+    Ok(identity)
+}
+
+fn build_generation(podman: &Podman, project: &Project) -> Result<String, String> {
+    let generation = podman
+        .run(&["pod", "inspect", "--format", "{{.Id}}", &project.pod()])
+        .map_err(|e| e.to_string())?;
+    let generation = generation.trim();
+    if generation.len() != 64 || !generation.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!(
+            "{}: Podman returned an invalid pod ID",
+            project.pod()
+        ));
+    }
+    Ok(generation.to_owned())
+}
+
 /// Labels on a session's container: its agent and its proxy user.
 pub const AGENT_LABEL: &str = "agent-run.agent";
 pub const PROXY_USER_LABEL: &str = "agent-run.proxy-user";
+
+fn build_credentials(paths: &Paths, project: &Project, generation: &str) -> std::path::PathBuf {
+    paths
+        .state
+        .join("build-proxies")
+        .join(&project.id)
+        .join(generation)
+}
 
 fn credentials(paths: &Paths, user: &str) -> std::path::PathBuf {
     paths.state.join("proxy-users").join(user)
 }
 
-/// The running sessions of a project's pod: their proxy user and agent.
+/// The running agent sessions of a project's pod: their proxy user and agent.
+/// Build identities use a separate label and must never count as active agent sessions.
 pub fn session_identities(
     podman: &Podman,
     project: &Project,
@@ -204,4 +271,10 @@ pub fn session_identities(
         }
     }
     Ok(found)
+}
+
+/// The mirror's certificate authority, in host state: the mirror serves with it, build
+/// containers trust it.
+pub fn mirror_tls(paths: &Paths) -> mirror::Tls {
+    mirror::Tls::new(paths.state.join("mirror-tls"))
 }

@@ -181,6 +181,17 @@ fn engram_reads_and_writes_through_its_service_and_saves_on_the_host() {
             && shown.contains("A demo skill"),
         shown,
     );
+    // Builds read the checkout too: a dangling link fails Gradle's input snapshots.
+    let build = exec(
+        &session.project.build_container(),
+        &checkout,
+        "cat AGENTS.local.md CLAUDE.local.md .claude/skills/demo/SKILL.md && ! touch AGENTS.local.md",
+    );
+    check(
+        "the engram links resolve read-only in the build container",
+        build.status.success() && text(&build).contains("app's engram context"),
+        text(&build),
+    );
     for script in [
         "echo x >> .memory/active-context.md",
         "echo x >> AGENTS.local.md",

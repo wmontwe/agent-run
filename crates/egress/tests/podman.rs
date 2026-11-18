@@ -344,13 +344,13 @@ fn one_proxy_enforces_each_pods_allowlist() {
             failures.push(format!("not refused: {name}"));
         }
     }
-    let header = "X-Agent-Run-Denied: example.org:443 is not allowed by agent-run's policy; to approve, run on the host: agent allow example.org:443";
+    let header = "X-Agent-Run-Denied: example.org:443 is not allowed by agent-run's policy; run agent denied on the host (build tools: builds.allow in policy)";
     if !succeeds(
         &client,
         &format!("curl -sv --max-time 8 https://example.org 2>&1 | grep -qF \"{header}\""),
     ) {
         failures.push(
-            "a refusal doesn't name the destination and the approve command (X-Agent-Run-Denied)"
+            "a refusal doesn't name the destination and host policy guidance (X-Agent-Run-Denied)"
                 .into(),
         );
     }
@@ -387,16 +387,18 @@ fn one_proxy_enforces_each_pods_allowlist() {
             allow: vec![],
             local: vec![],
         },
+        SessionEgress {
+            user: "build-1".into(),
+            allow: vec![destination("example.net")],
+            local: vec![],
+        },
     ];
-    proxy
-        .ensure(
-            &pods,
-            &[
-                htpasswd_line("pi-1", "secret-pi", "salt1"),
-                htpasswd_line("claude-1", "secret-claude", "salt2"),
-            ],
-        )
-        .unwrap();
+    let passwords = [
+        htpasswd_line("pi-1", "secret-pi").unwrap(),
+        htpasswd_line("claude-1", "secret-claude").unwrap(),
+        htpasswd_line("build-1", "secret-build").unwrap(),
+    ];
+    proxy.ensure(&pods, &passwords).unwrap();
     std::thread::sleep(std::time::Duration::from_secs(1));
     let with = |user: &str, url: &str| {
         let script = format!(
@@ -409,6 +411,26 @@ fn one_proxy_enforces_each_pods_allowlist() {
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
     };
     for (name, actual, expected) in [
+        (
+            "a build-only host with build credentials",
+            with("build-1:secret-build", "https://example.net"),
+            "200 200",
+        ),
+        (
+            "an agent cannot use the build-only host",
+            with("pi-1:secret-pi", "https://example.net"),
+            "403 000",
+        ),
+        (
+            "dropping authentication cannot use the build-only host",
+            fetch(&client, "https://example.net", false),
+            "403 000",
+        ),
+        (
+            "build credentials do not inherit agent-only hosts",
+            with("build-1:secret-build", "https://example.org"),
+            "403 000",
+        ),
         (
             "an identity's own host",
             with("pi-1:secret-pi", "https://example.org"),
@@ -460,6 +482,34 @@ fn one_proxy_enforces_each_pods_allowlist() {
     let denied = denials(&proxy.service.log().unwrap(), &pods[0].subnet, 20);
     if !denied.iter().any(|d| d.agent() == Some("claude")) {
         failures.push(format!("denials name the agent: {denied:?}"));
+    }
+    let cross_project = Command::new("podman")
+        .args([
+            "exec",
+            &server,
+            "curl",
+            "-s",
+            "-o",
+            "/dev/null",
+            "--max-time",
+            "8",
+            "-w",
+            "%{http_connect} %{http_code}",
+            "-x",
+            "http://build-1:secret-build@proxy:3128",
+            "https://example.net",
+        ])
+        .output()
+        .unwrap();
+    if String::from_utf8_lossy(&cross_project.stdout).trim() != "403 000" {
+        failures.push("build credentials worked from another project's subnet".into());
+    }
+    // Revoking only the build grant denies fresh connections with still-valid credentials.
+    pods[0].sessions[2].allow.clear();
+    proxy.ensure(&pods, &passwords).unwrap();
+    sleep(Duration::from_secs(1));
+    if with("build-1:secret-build", "https://example.net") != "403 000" {
+        failures.push("a revoked build-only host remains accessible".into());
     }
     pods[0].sessions.clear();
 

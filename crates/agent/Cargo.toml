@@ -29,4 +29,5 @@ relay = { path = "../relay" }
 sessions = { path = "../sessions" }
 vision = { path = "../vision" }
 workspace = { path = "../workspace" }
+signal-hook = "0.4.6"
 

@@ -20,14 +20,17 @@ impl Drop for Cleanup {
 fn settings<'a>(image: &'a str, sdk: &Path, record: &'a Path) -> builds::Settings<'a> {
     builds::Settings {
         image,
+        proxy: None,
         memory: 1,
         cpus: 1.0,
         max_concurrent: 1,
         mirror_remotes: vec![],
         mirror_url: "",
+        mirror_ca: record,
         sdk_dir: None,
         host_sdk: Some(sdk.to_path_buf()),
         licenses_copied: record,
+        link_mounts: vec![],
     }
 }
 

@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 pub struct Policy {
     /// Destinations every project pod may reach (agent and build containers together).
     pub project_allow: Vec<Destination>,
+    /// Additional destinations available only through the authenticated build proxy.
+    pub build_allow: Vec<Destination>,
     /// Repositories the GitHub relay serves, `owner/repo`.
     pub github_repos: Vec<String>,
     /// Maven-style remotes the mirror proxies, by repository id.
@@ -57,6 +59,7 @@ pub struct WorkspaceRules {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProjectSettings {
     pub allow: Vec<Destination>,
+    pub build_allow: Vec<Destination>,
     pub build_memory: Option<u64>,
     /// Each agent's own approvals in this project.
     pub agents: BTreeMap<String, Grants>,
@@ -103,6 +106,17 @@ impl Policy {
             list.dedup();
         }
         grants
+    }
+
+    /// Build-only additions; shared destinations are still supplied separately.
+    pub fn for_build(&self, checkout: &Path) -> Vec<Destination> {
+        let mut allow = self.build_allow.clone();
+        if let Some(project) = self.projects.get(checkout) {
+            allow.extend(project.build_allow.iter().cloned());
+        }
+        allow.sort();
+        allow.dedup();
+        allow
     }
 
     pub fn for_project(&self, checkout: &Path) -> ProjectView<'_> {
@@ -180,7 +194,15 @@ pub fn parse(text: &str, home: &Path) -> Result<Policy, PolicyError> {
         // identity, whatever spelling (symlinks) the policy uses. A path that doesn't exist
         // yet stays as written.
         let path = std::fs::canonicalize(&path).unwrap_or(path);
+        let project_builds = project.builds;
         let settings = ProjectSettings {
+            build_allow: destinations(
+                &project_builds
+                    .as_ref()
+                    .map(|b| b.allow.clone())
+                    .unwrap_or_default(),
+                &format!("projects.\"{key}\".builds.allow"),
+            )?,
             allow: destinations(
                 &project
                     .network
@@ -189,8 +211,7 @@ pub fn parse(text: &str, home: &Path) -> Result<Policy, PolicyError> {
                     .unwrap_or_default(),
                 &format!("projects.\"{key}\".network.project.allow"),
             )?,
-            build_memory: project
-                .builds
+            build_memory: project_builds
                 .and_then(|b| b.memory)
                 .map(|m| memory(&m, &format!("projects.\"{key}\".builds.memory")))
                 .transpose()?,
@@ -208,6 +229,7 @@ pub fn parse(text: &str, home: &Path) -> Result<Policy, PolicyError> {
     }
 
     Ok(Policy {
+        build_allow: destinations(&builds.allow, "builds.allow")?,
         project_allow: destinations(
             &network.project.map(|p| p.allow).unwrap_or_default(),
             "network.project.allow",

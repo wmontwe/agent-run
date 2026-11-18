@@ -7,6 +7,7 @@ publish.workspace = true
 description = "The project's build container: its volumes, settings and Podman arguments."
 
 [dependencies]
+buildrun = { path = "../buildrun" }
 mountplan = { path = "../mountplan" }
 pod = { path = "../pod" }
 podman = { path = "../podman" }

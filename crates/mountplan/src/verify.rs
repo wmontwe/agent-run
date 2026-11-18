@@ -52,14 +52,15 @@ pub fn verify(plan: &Plan, report: &Report) -> Vec<String> {
             continue;
         };
         match &item.kind {
-            Kind::Workspace | Kind::Pin | Kind::ReadOnly => {
+            Kind::Workspace | Kind::Pin | Kind::ReadOnly | Kind::ReadOnlyFile => {
                 // Same file share, the planned folder within it, the planned options, and
                 // the host's inode: the path alone cannot detect a rearranged folder.
                 let expected_root = format!("{}{}", workspace.root, &target[checkout.len()..]);
                 if mount.fs_type != workspace.fs_type || mount.root != expected_root {
                     problems.push(format!("{name}: source {} {}", mount.fs_type, mount.root));
                 }
-                if mount.is_read_only() != (item.kind == Kind::ReadOnly) {
+                let read_only = matches!(item.kind, Kind::ReadOnly | Kind::ReadOnlyFile);
+                if mount.is_read_only() != read_only {
                     problems.push(format!(
                         "{name}: mounted {}",
                         if mount.is_read_only() {
@@ -81,13 +82,11 @@ pub fn verify(plan: &Plan, report: &Report) -> Vec<String> {
                         mount.options.join(",")
                     ));
                 }
-            }
-            Kind::Hide => {
-                if mount.root != "/null" || !mount.is_read_only() {
-                    problems.push(format!(
-                        "{name}: not hidden ({} {})",
-                        mount.fs_type, mount.root
-                    ));
+                // Readable and empty: a tmpfs that copied the host's contents in hides nothing.
+                match report.targets[index].and_then(|t| t.entries) {
+                    Some(0) => {}
+                    Some(n) => problems.push(format!("{name}: masked but not empty ({n} entries)")),
+                    None => problems.push(format!("{name}: masked folder can't be listed")),
                 }
             }
             Kind::Private { subpath } => {

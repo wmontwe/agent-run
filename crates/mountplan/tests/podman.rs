@@ -88,6 +88,8 @@ fn checkout() -> PathBuf {
         fs::create_dir_all(root.join(dir)).unwrap();
     }
     fs::write(root.join("settings.gradle.kts"), "").unwrap();
+    // A read-only single file: verified like the folders.
+    fs::write(root.join("local.properties"), "sdk.dir=/Users/me/sdk\n").unwrap();
     fs::write(root.join(".signing/release.jks"), "secret").unwrap();
     fs::write(
         root.join("gradle/wrapper/gradle-wrapper.properties"),
@@ -281,11 +283,40 @@ fn blocks_folders_rearranged_after_planning() {
 #[test]
 #[ignore = "needs the Podman machine and localhost/agent-run-gate"]
 fn blocks_a_missing_mask() {
-    let outcome = scenario(|_, args| {
-        let i = args.iter().position(|a| a.starts_with("mask=")).unwrap();
+    let outcome = scenario(|root, args| {
+        let dst = format!("type=tmpfs,dst={}/.signing,", root.display());
+        let i = args.iter().position(|a| a.starts_with(&dst)).unwrap();
         args.drain(i - 1..=i);
     });
     assert_blocked(&outcome, ".signing not mounted");
+}
+
+#[test]
+#[ignore = "needs the Podman machine and localhost/agent-run-gate"]
+fn blocks_a_mask_that_copies_the_folder_in() {
+    // Without notmpcopyup, Podman copies the host's .signing into the tmpfs: a read-only tmpfs
+    // that holds the secret it should hide.
+    let outcome = scenario(|_, args| {
+        for arg in args.iter_mut() {
+            *arg = arg.replace(",notmpcopyup", "");
+        }
+    });
+    assert_blocked(&outcome, ".signing: masked but not empty");
+}
+
+#[test]
+#[ignore = "needs the Podman machine and localhost/agent-run-gate"]
+fn blocks_podmans_own_mask_which_builds_cannot_list() {
+    let outcome = scenario(|root, args| {
+        let dst = format!("type=tmpfs,dst={}/.signing,", root.display());
+        let i = args.iter().position(|a| a.starts_with(&dst)).unwrap();
+        args.drain(i - 1..=i);
+        args.extend([
+            "--security-opt".to_owned(),
+            format!("mask={}/.signing", root.display()),
+        ]);
+    });
+    assert_blocked(&outcome, ".signing: masked folder can't be listed");
 }
 
 #[test]

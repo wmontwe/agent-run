@@ -86,7 +86,15 @@ fn a_session_protects_what_the_design_says() {
             "cat .SIGNING/release.properties",
         ),
         ("read .idea", "cat .idea/workspace.xml"),
-        ("read local.properties", "grep -q sdk.dir local.properties"),
+        (
+            "write local.properties (host tools run its sdk.dir)",
+            "echo sdk.dir=/tmp/planted >> local.properties",
+        ),
+        // A walk over the checkout (Gradle's fileTree) must not fail on a masked folder.
+        (
+            "list .signing as anything but empty",
+            "test -n \"$(ls -A .signing)\"",
+        ),
         (
             "write the project's .claude",
             "echo x > .claude/settings.json",
@@ -130,6 +138,13 @@ fn a_session_protects_what_the_design_says() {
     ];
     let allowed = [
         ("write a source file", "echo 'class B' > app/src/B.kt"),
+        // Builds read sdk.dir; it holds nothing else (secrets are refused at the start).
+        ("read local.properties", "grep -q sdk.dir local.properties"),
+        ("list the masked .signing", "ls -A .signing"),
+        (
+            "walk the checkout",
+            "find . -name '*.properties' > /dev/null",
+        ),
         (
             "edit the version catalog",
             "echo '# edited' >> gradle/libs.versions.toml",

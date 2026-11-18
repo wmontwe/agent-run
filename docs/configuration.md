@@ -142,7 +142,7 @@ Paths are exact folders relative to the checkout root, not glob patterns:
 
 | Rule | Container view |
 |---|---|
-| `mask` | Host contents are hidden behind an empty protected mount. |
+| `mask` | Host contents are hidden: the folder is empty and read-only. |
 | `read-only` | Host contents are visible but cannot be changed. |
 | `private` | Container-owned storage replaces the host folder. Host contents are not copied into it. |
 
@@ -150,13 +150,50 @@ Private state is associated with the project and can survive sessions. Agents in
 edited unless automatically protected. Do not weaken Git metadata protection with
 conflicting private/mask rules or case aliases.
 
-Existing host Gradle state and supported real host-agent configuration folders receive
+Existing host Gradle state, Rust `target` folders, and supported real host-agent configuration folders receive
 automatic protection. Paths used as protected mount targets must not traverse symlinks.
 Engram-managed immutable links use their separate integration checks.
 
 Workspace-rule changes require `agent restart`, which ends active sessions in the
 project. A newly created matching folder may remain unprotected until restart even
 when the rule itself has not changed.
+
+## Build network access
+
+Build-only destinations belong in the existing `[builds]` table, not the shared
+`[network.project]` list:
+
+```toml
+[builds]
+allow = ["index.crates.io", "static.crates.io"]
+```
+
+For additions used by just one checkout:
+
+```toml
+[projects."~/Projects/app".builds]
+allow = ["packages.example.org"]
+```
+
+The two build lists merge; neither is added to agents' direct proxy grants. Shared
+`network.project.allow` grants still apply to both agents and builds. If these hosts were
+previously added there, remove those entries to make their access build-only. Temporary
+`agent allow` approvals continue to apply to agent sessions, not builds.
+
+The build container uses its own proxy credentials, stored only in trusted host state and
+passed to that container. Dropping authentication does not grant build-only hosts, and
+an agent's credentials cannot use them. Clients must honor the authenticated HTTP proxy;
+Cargo/curl support this through their proxy environment variables. Java-specific clients
+may need their own authentication configuration; Gradle dependency mirroring is unchanged.
+
+This is not isolation from an agent's build code: agents can run arbitrary builds and
+reach build-approved destinations indirectly, and project sessions share build services.
+Use exact HTTPS hosts/ports; build grants do not authorize private/local services.
+
+After updating the launcher, run `agent restart` once to replace older build containers
+that lack the build proxy identity. Later allowlist edits reconcile when a session starts;
+already-open tunnels can survive revocation until they close. `agent policy show` displays
+build-only grants separately and `agent denied` points build denials to `builds.allow`.
 
 ## Gradle dependencies
 
@@ -178,6 +215,76 @@ supports SDK package downloads.
 
 Configure project dependencies here rather than granting their Maven hosts directly to
 every agent. Host builds continue using their own configuration and caches.
+
+## Rust dependencies
+
+Cargo does not use the Maven/Gradle dependency mirror. To fetch public crates, merge these
+hosts into your existing build-only list (see [Build network access](#build-network-access)):
+
+```toml
+[builds]
+allow = ["index.crates.io", "static.crates.io"]
+```
+
+Other registries and Git dependencies need their own deliberate grants. The read-only
+GitHub API relay is not a Git transport and cannot satisfy Cargo Git dependencies.
+Host Cargo credentials/configuration are not imported. Project `.cargo/config.toml` is
+untrusted build configuration and can still define aliases, registries, and build tools.
+
+The build image installs a pinned Rust toolchain with rustfmt and Clippy using versioned
+rustup bootstrap artifacts checked against their published SHA-256, followed by rustup's
+verified toolchain installation. Downloads happen during the trusted image build, not
+through a session's dependency mirror. Runtime toolchains are read-only under
+`/opt/rustup`; automatic installation is disabled. To support another project-selected
+version or component, explicitly install it when building the image, then restart the
+project. `cargo-run` does not ignore project toolchain declarations or silently choose a
+different version.
+
+Cargo's writable cache and default target directories are isolated under `/build-state/rust`.
+CLI/configuration overrides and arbitrary build scripts are not constrained to these
+output paths; existing standard host `target` folders are hidden by the mount plan.
+Nonstandard host output folders need explicit workspace protection. New folders may need
+`agent restart` before receiving mount protection.
+
+## Kotlin Toolchain dependencies
+
+Kotlin Toolchain can't use the egress proxy, so `kotlin-run` points each of its downloads at
+the dependency mirror (Kotlin Toolchain 0.14.0 or newer lets every download address be
+replaced). The mirror needs a remote for each upstream the project uses:
+
+```toml
+[mirror.remotes]
+central = "https://repo.maven.apache.org/maven2"
+google = "https://dl.google.com/dl/android/maven2"
+kotlin-toolchain = "https://artifacts-caching-proxy.aws.intellij.net/packages.jetbrains.team/maven/p/amper/amper"
+jetbrains-download = "https://download.jetbrains.com"   # the JDK list
+google-downloads = "https://dl.google.com"              # the Android SDK
+nodejs = "https://nodejs.org/dist"                      # web targets
+pnpm = "https://github.com/pnpm/pnpm/releases/download" # web targets
+gradle-distributions = "https://services.gradle.org/distributions"  # Android builds
+
+[builds]
+allow = ["registry.npmjs.org"]  # pnpm's packages, through the proxy
+```
+
+Remote names are free: `kotlin-run` finds each by its upstream address and warns about any
+it can't find. The Kotlin Toolchain repository comes through JetBrains' caching proxy: the
+repository itself redirects large files to a CDN host that changes, which the mirror's
+allowlist can't follow. The wrapper checks the distribution against its pinned checksum.
+
+The mirror serves HTTPS with agent-run's own certificate authority (in agent-run's state;
+build containers trust it): Kotlin Toolchain resolves from HTTPS repositories only. Builds
+have a writable home in the project's build state, so tools that write under `~` (Android's
+`~/.android`, Maven's `~/.m2`, pnpm's `~/.local`) work; agents don't see it.
+
+Kotlin Toolchain uses `JAVA_HOME` when it matches a project's JDK criteria: `kotlin-run`
+sets it to the image's Temurin 25, which also runs the Kotlin CLI. A project requiring
+another JDK version would download one from its vendor's host, which no mirror serves.
+
+`kotlin-run` forwards all CLI arguments, including project plugin commands through `do`.
+The default output/cache locations and foreground-command limitations are described in
+[the README](../README.md#kotlin-toolchain-builds). Compose MCP is not a stdio service
+through this framed, stdin-closed build protocol.
 
 ## GitHub access
 

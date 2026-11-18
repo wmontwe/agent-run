@@ -23,8 +23,8 @@ flowchart LR
     subgraph vm[Rootless Podman VM]
         subgraph pod[Project pod: one per checkout]
             agents[Agent sessions]
-            build[Shared build container<br/>Gradle, displays, browsers]
-            agents -->|gradle-run over localhost| build
+            build[Shared build container<br/>Gradle, Rust, Kotlin Toolchain, displays, browsers]
+            agents -->|gradle-run / cargo-run / kotlin-run over localhost| build
         end
         proxy[Egress proxy]
         relay[Read-only GitHub relay]
@@ -58,7 +58,7 @@ storage to communicate with the host save process.
 | `pod` | Project identity, internal network, pod, volumes and stored plan. |
 | `agents` | CLI-specific arguments, instructions and session MCP configuration. |
 | `sessions` | Agent-container preparation and arguments, independent of CLI conventions. |
-| `builds` / `buildrun` | Build-container state and the `gradle-run` request/queue/output protocol. |
+| `builds` / `buildrun` | Build-container state, typed Gradle/Cargo/Kotlin Toolchain backends and their shared request/queue/output protocol. |
 | `vision` | Per-session display and browser in the build container. |
 | `egress` / `approvals` | Proxy rules, denials, session grants and persistent approval edits. |
 | `relay` / `mirror` | Restricted GitHub API access and dependency repository configuration. |
@@ -89,12 +89,15 @@ Keep trusted installation/configuration/tooling outside writable workspaces.
 
 - Bind-mount the canonical checkout at its host path. Policy specifies exact relative
   folder names, not glob rules.
-- Read-only folders expose host contents without writes. Masks hide contents. Private
+- Read-only folders expose host contents without writes. Masks hide contents behind an
+  empty, read-only tmpfs that can be listed (Podman's own mask can't be, which fails
+  builds that walk the checkout); the tmpfs must not copy up what it covers. Private
   mounts replace host folders with project-owned container storage, without copying host
   contents.
 - Git metadata must be read-only independently of optional policy rules. Conflicting
   rules or physical/case aliases must not weaken that invariant.
-- Protect existing supported real host-agent configuration folders and host Gradle state.
+- Protect existing supported real host-agent configuration folders, host Gradle state,
+  and Rust `target` folders (including case aliases and nested targets).
   Build scripts and ordinary source remain writable.
 - Discover Gradle state/settings using case-insensitive names on the supported filesystem
   while preserving actual paths. Pin mount-target parents so renaming an ancestor cannot
@@ -103,12 +106,14 @@ Keep trusted installation/configuration/tooling outside writable workspaces.
   targets. Compare canonical identities, not textual path prefixes.
 - On case-insensitive host filesystems, single-file mounts can be bypassed through another
   spelling. Do not rely on them to protect secrets. `local.properties` is accepted only
-  for supported SDK/NDK path entries.
+  for supported SDK/NDK path entries, and mounted read-only as a regular file: builds read
+  it, and host tools run the SDK it names. A masked file is a device, which Gradle refuses
+  as an input.
 
 Both agent and build containers start behind the gate. Verify the actual mounted
 filesystem against the plan before releasing any command. Checks include type-specific
 source identity, bind inodes, mount roots/options, private-volume subpaths, required
-masks, and unexpected checkout submounts. Plan generation must include every required
+masks and that each is empty, and unexpected checkout submounts. Plan generation must include every required
 protection.
 
 Store plans outside the checkout and bind their hashes to pod labels. Reused pods retain
@@ -135,15 +140,72 @@ PID limits and policy CPU/memory caps. Defaults are 2 CPUs/2 GiB per agent and
 8 CPUs/16 GiB per project build container. The VM's
 allocation limits aggregate resources.
 
-`gradle-run` runs inside an agent container and sends cwd, arguments and supported
-session metadata to the build server. The server validates the checkout/wrapper root,
-queues work per project, streams output and returns status. General environment
+`gradle-run`, `cargo-run` and `kotlin-run` run inside an agent container and send cwd, arguments and supported
+session metadata to the build server. The wire greeting selects an explicit backend;
+`gradle-run 1` retains its existing meaning, `cargo-run 1` selects Cargo, and
+`kotlin-run 1` selects the project-local Kotlin Toolchain wrapper. The server
+validates canonical checkout/cwd (and Gradle's wrapper root), queues both tools under one
+per-project limit, streams output and returns status. Clients cannot select an arbitrary
+executable. General environment
 forwarding and interactive build stdin are not requirements.
+
+Redirect build outputs, project caches and Kotlin state into container-owned storage.
+Keep safety-net submounts for writes occurring before redirection. Gradle home and Android
+SDK use separate project volumes. The build user's home is a writable subpath of the
+project's state volume, which agents don't mount: tools writing under `~` (including the
+JVM's `user.home`, which ignores `HOME`) work. Agents read build results. Builds write them.
+Host Gradle state must remain untouched.
+
+Rust toolchains and rustup proxies are installed in the trusted image under `/opt/rustup`
+and `/opt/cargo`. Runtime automatic toolchain installation is disabled; project selectors
+must name an installed toolchain. Cargo's writable home and default target outputs use
+project-owned `/build-state/rust` storage. No host Cargo home is mounted. Existing `target`
+folders are masked without walking their contents, with their ancestors pinned. Explicit
+output overrides and arbitrary build code can still write other writable checkout paths.
+Cargo registry/Git dependencies use controlled egress, not the Maven mirror. Linux builds
+do not replace macOS-specific verification.
+
+Kotlin Toolchain requests discover an executable project-local wrapper within the canonical
+checkout, rejecting escaping wrapper symlinks and missing nested project wrappers rather
+than using a global installation, and wrappers older than 0.14.0. Plugin argv is forwarded
+verbatim. Bootstrap/shared caches and default output roots are namespaced under
+`/build-state/kotlin-toolchain`; Kotlin project/module manifests also trigger private
+`build` safety nets. Explicit folder rules are compared canonically to avoid conflicting
+duplicate mounts. Kotlin Toolchain has no proxy support: each of its download addresses
+(0.14.0 lets every one be replaced) points at the mirror remote of that upstream, found by
+URL like Gradle's repositories; a missing remote is reported. The Kotlin CLI runs on the
+image's Temurin 25, which is also `JAVA_HOME`, used by Kotlin Toolchain when it matches a
+project's JDK criteria. Other JDK versions would come from vendor hosts no mirror serves.
+Kotlin/Native has no Linux arm64 compiler, so iOS targets don't build in the container. The
+foreground protocol closes stdin and is not a Compose MCP transport.
 
 Redirect build outputs, project caches and Kotlin state into container-owned storage.
 Keep safety-net submounts for writes occurring before redirection. Gradle home and Android
 SDK use separate project volumes. Agents read build results. Builds write them. Host
 Gradle state must remain untouched.
+
+Rust toolchains and rustup proxies are installed in the trusted image under `/opt/rustup`
+and `/opt/cargo`. Runtime automatic toolchain installation is disabled; project selectors
+must name an installed toolchain. Cargo's writable home and default target outputs use
+project-owned `/build-state/rust` storage. No host Cargo home is mounted. Existing `target`
+folders are masked without walking their contents, with their ancestors pinned. Explicit
+output overrides and arbitrary build code can still write other writable checkout paths.
+Cargo registry/Git dependencies use controlled egress, not the Maven mirror. Linux builds
+do not replace macOS-specific verification.
+
+Kotlin Toolchain requests discover an executable project-local wrapper within the canonical
+checkout, rejecting escaping wrapper symlinks and missing nested project wrappers rather
+than using a global installation. Plugin argv is forwarded verbatim. Bootstrap/shared
+caches and default output roots are namespaced under `/build-state/kotlin-toolchain`;
+Kotlin project/module manifests also trigger private `build` safety nets. Explicit folder
+rules are compared canonically to avoid conflicting duplicate mounts. Image JVM selectors
+and JVM-option variables are removed; Kotlin owns provisioning and JVM selection for
+projects. The Kotlin CLI itself runs on the image's Temurin 25 (`KOTLIN_CLI_JAVA_HOME`),
+chosen always, not as a fallback, so the launcher downloads no runtime. The wrapper fetches
+the distribution from JetBrains' caching proxy (`KOTLIN_CLI_DOWNLOAD_ROOT`): the repository
+itself redirects to a CDN host that changes, which an exact-host allowlist cannot follow. Its
+upstream checksums and cold download/authentication paths still require real integration
+acceptance. The foreground protocol closes stdin and is not a Compose MCP transport.
 
 Cancellation must remain observable during continuous output, installer-lock contention,
 downloads and extraction. Own request processes/descendants, reap them and release queue
@@ -162,17 +224,29 @@ Project networks are internal. The proxy is the controlled outbound route. Ordin
 allowlisted access uses HTTPS CONNECT. Explicit local-service exceptions deliberately
 permit named host/port HTTP access.
 
-- Shared grants are available to builds and agents. Authenticated session grants combine
+- Shared grants are available to builds and agents. `builds.allow` and project build
+  additions require a dedicated build proxy identity, never an unauthenticated subnet
+  allow. Its credentials live in trusted host state and only the build container's
+  environment; they are reused within a pod and removed on pod teardown/shutdown. Reused
+  containers must match the stored identity or require restart. Agents' own credentials
+  and unauthenticated requests cannot use build-only hosts. Authenticated session grants combine
   identity and project subnet. One agent type's direct grants do not automatically become
   another agent type's grants.
 - Agents in a project control build code and share localhost/state. Access available
-  through shared services remains shared.
+  through shared services remains shared. Build-only grants restrict direct proxy access,
+  not an agent's ability to delegate arbitrary build code or extract build credentials
+  through that code.
 - Refuse unapproved names before address resolution, block private/host destinations
   except explicit narrow exceptions, restrict ports/methods and deny by default.
 - The GitHub relay fixes its upstream, restricts repository paths/methods and does not
   forward host credentials.
-- The dependency mirror serves configured remotes. Build repository mappings are captured
-  when the build container starts. Changed mappings require project restart.
+- The dependency mirror serves configured remotes over HTTPS only, with agent-run's own
+  certificate authority (created in trusted host state; its key is never mounted). Build
+  containers mount its certificate; the build server writes a JVM trust store and a PEM
+  bundle (public authorities plus agent-run's) before serving. Pods reach the mirror
+  directly or through a proxy tunnel; the mirror refuses writes itself. Build repository
+  mappings are captured when the build container starts. Changed mappings require project
+  restart.
 
 Authorization reconciliation must reload current trusted policy under the appropriate lock. Desired configuration and successfully applied state
 are distinct. Failed application must remain retryable through the public command even

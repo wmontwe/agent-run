@@ -28,11 +28,13 @@ pub enum Kind {
     Pin,
     /// A folder agents read but can't change.
     ReadOnly,
-    /// A folder hidden by `--security-opt mask`: an empty read-only tmpfs.
+    /// A folder hidden behind an empty read-only tmpfs that can be listed: a build walking the
+    /// checkout finds it empty (Podman's own `mask` can't be listed, which fails the walk).
     Mask,
-    /// A single file hidden by `--security-opt mask`: `/dev/null`, read-only. Bypassed through
-    /// another spelling on a case-insensitive checkout, so only for files without secrets.
-    Hide,
+    /// A single file agents read but can't change, as a regular file: builds read it (a mask's
+    /// `/dev/null` is a device, which Gradle refuses as an input). Bypassed through another
+    /// spelling on a case-insensitive checkout, so only for files without secrets.
+    ReadOnlyFile,
     /// A folder replaced by a subpath of the project's state volume.
     Private { subpath: String },
 }
@@ -87,7 +89,12 @@ pub fn plan(checkout: &Path, inspection: &Inspection, volume: &str) -> Result<Pl
             .chain(&inspection.host_state)
             .map(|r| (r.clone(), Kind::Mask)),
     );
-    targets.extend(inspection.hidden.iter().map(|r| (r.clone(), Kind::Hide)));
+    targets.extend(
+        inspection
+            .read_only_files
+            .iter()
+            .map(|r| (r.clone(), Kind::ReadOnlyFile)),
+    );
     targets.extend(
         inspection
             .private
@@ -106,6 +113,17 @@ pub fn plan(checkout: &Path, inspection: &Inspection, volume: &str) -> Result<Pl
     let named: BTreeSet<&str> = targets.iter().map(|(r, _)| r.as_str()).collect();
     if named.len() != targets.len() {
         return Err(error("a folder appears under two rules"));
+    }
+    // A masked folder is empty and read-only: nothing can be mounted inside it.
+    for (relative, _) in &targets {
+        if let Some(mask) = targets.iter().find(|(m, kind)| {
+            *kind == Kind::Mask && Path::new(relative).starts_with(m) && relative != m
+        }) {
+            return Err(error(format!(
+                "{relative} is inside the masked folder {}; remove one of the rules",
+                mask.0
+            )));
+        }
     }
     let mut pins = BTreeSet::new();
     for (relative, _) in &targets {
@@ -130,7 +148,7 @@ pub fn plan(checkout: &Path, inspection: &Inspection, volume: &str) -> Result<Pl
         check_chars(&relative)?;
         check_no_symlinks(checkout, &relative)?;
         rest.push(match kind {
-            Kind::ReadOnly => host_mount(checkout, &relative, Kind::ReadOnly)?,
+            kind @ (Kind::ReadOnly | Kind::ReadOnlyFile) => host_mount(checkout, &relative, kind)?,
             kind => Mount {
                 relative,
                 kind,
@@ -157,7 +175,7 @@ fn host_mount(checkout: &Path, relative: &str, kind: Kind) -> Result<Mount, Plan
     let path = checkout.join(relative);
     let meta =
         fs::symlink_metadata(&path).map_err(|e| error(format!("{}: {e}", path.display())))?;
-    if kind == Kind::Hide {
+    if kind == Kind::ReadOnlyFile {
         if !meta.is_file() {
             return Err(error(format!("{} is not a regular file", path.display())));
         }
@@ -187,7 +205,7 @@ fn check_no_symlinks(checkout: &Path, relative: &str) -> Result<(), PlanError> {
     Ok(())
 }
 
-/// Podman's `--mount` splits on commas and `mask=` on colons; the text form on tabs and
+/// Podman's `--mount` splits on commas and `-v` on colons; the text form on tabs and
 /// newlines. Paths with them are refused rather than escaped.
 fn check_chars(path: &str) -> Result<(), PlanError> {
     match path
@@ -218,7 +236,6 @@ impl Plan {
     /// Podman arguments for the plan's mounts.
     pub fn podman_args(&self) -> Vec<String> {
         let mut args = Vec::new();
-        let mut masks = Vec::new();
         for mount in &self.mounts {
             let target = self.target(mount).display().to_string();
             match &mount.kind {
@@ -226,11 +243,18 @@ impl Plan {
                     "--mount".to_owned(),
                     format!("type=bind,src={target},dst={target}"),
                 ]),
-                Kind::ReadOnly => args.extend([
+                Kind::ReadOnly | Kind::ReadOnlyFile => args.extend([
                     "--mount".to_owned(),
                     format!("type=bind,src={target},dst={target},ro"),
                 ]),
-                Kind::Mask | Kind::Hide => masks.push(target),
+                Kind::Mask => args.extend([
+                    "--mount".to_owned(),
+                    // notmpcopyup: without it, Podman copies what's below into the tmpfs, which
+                    // here is the folder's host contents. Verification checks it's empty.
+                    format!(
+                        "type=tmpfs,dst={target},ro=true,tmpfs-mode=0555,tmpfs-size=4k,notmpcopyup"
+                    ),
+                ]),
                 Kind::Private { subpath } => args.extend([
                     "--mount".to_owned(),
                     // Shared label, relabeled at each mount: a file a container moved in from its
@@ -242,12 +266,6 @@ impl Plan {
                     ),
                 ]),
             }
-        }
-        if !masks.is_empty() {
-            args.extend([
-                "--security-opt".to_owned(),
-                format!("mask={}", masks.join(":")),
-            ]);
         }
         args
     }
@@ -281,7 +299,7 @@ impl Plan {
                 Kind::Pin => ("pin", ""),
                 Kind::ReadOnly => ("read-only", ""),
                 Kind::Mask => ("mask", ""),
-                Kind::Hide => ("hide", ""),
+                Kind::ReadOnlyFile => ("read-only-file", ""),
                 Kind::Private { subpath } => ("private", subpath.as_str()),
             };
             text.push_str(&format!("{kind}\t{}\t{ino}\t{extra}\n", mount.relative));
@@ -310,7 +328,7 @@ impl Plan {
                 "pin" => Kind::Pin,
                 "read-only" => Kind::ReadOnly,
                 "mask" => Kind::Mask,
-                "hide" => Kind::Hide,
+                "read-only-file" => Kind::ReadOnlyFile,
                 "private" => Kind::Private {
                     subpath: extra.to_owned(),
                 },

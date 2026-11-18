@@ -14,6 +14,17 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // Before serving: every build's JVM and curl reach the mirror over HTTPS.
+    if let Some(ca) = &config.mirror_ca {
+        let Some(jdk) = config.jdks.last() else {
+            eprintln!("gradle-run-server: no JDK for the trust store (AGENT_RUN_JDKS is empty)");
+            return ExitCode::FAILURE;
+        };
+        if let Err(e) = buildrun::trust::prepare(jdk, ca) {
+            eprintln!("gradle-run-server: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
     let port = std::env::var("AGENT_RUN_BUILD_PORT")
         .ok()
         .and_then(|p| p.parse().ok())

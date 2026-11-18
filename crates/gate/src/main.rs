@@ -9,8 +9,9 @@
 //! ```
 //!
 //! The report format is parsed by the `mountplan` crate:
-//! `mount <mountinfo line>` per mount, then `target <index> <dev> <ino>` per target
-//! (`- -` when a target doesn't exist). No dependencies, so it builds as one static binary.
+//! `mount <mountinfo line>` per mount, then `target <index> <dev> <ino> <entries>` per target
+//! (`- - -` when a target doesn't exist; `entries` is `-` unless it's a folder it can list).
+//! No dependencies, so it builds as one static binary.
 
 use std::env;
 use std::fs;
@@ -81,8 +82,19 @@ fn report(targets: &[String]) {
     }
     for (index, target) in targets.iter().enumerate() {
         match fs::symlink_metadata(target) {
-            Ok(meta) => out.push_str(&format!("target {index} {} {}\n", meta.dev(), meta.ino())),
-            Err(_) => out.push_str(&format!("target {index} - -\n")),
+            Ok(meta) => {
+                // A masked folder must be empty: a mount that copied contents in shows here.
+                let entries = match fs::read_dir(target) {
+                    Ok(listing) if meta.is_dir() => listing.count().to_string(),
+                    _ => "-".to_owned(),
+                };
+                out.push_str(&format!(
+                    "target {index} {} {} {entries}\n",
+                    meta.dev(),
+                    meta.ino()
+                ));
+            }
+            Err(_) => out.push_str(&format!("target {index} - - -\n")),
         }
     }
     print!("{out}");

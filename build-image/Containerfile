@@ -1,5 +1,5 @@
 # The build container's image: the
-# JDKs, the gate as entrypoint, gradle-run's server with its init scripts, and each session's
+# JDKs and Rust, the gate as entrypoint, the build server with its init scripts, and each session's
 # display and browser. Build from the repository root:
 #   podman build -t localhost/agent-run-build -f build-image/Containerfile \
 #       --ignorefile build-image/Containerfile.ignore .
@@ -38,10 +38,25 @@ RUN dpkg --add-architecture amd64 \
     && apt-get install -y --no-install-recommends ca-certificates curl unzip git \
         libc6:amd64 libstdc++6:amd64 zlib1g:amd64 \
         xvfb chromium nodejs socat \
-        libxext6 libxrender1 libxtst6 libxi6 libxrandr2 libfreetype6 fontconfig libgl1 libgl1-mesa-dri \
+        libxext6 libxrender1 libxtst6 libxi6 libxrandr2 libfreetype6 fontconfig libgl1 libegl1 libgl1-mesa-dri \
         fonts-dejavu-core fonts-liberation fonts-noto-color-emoji \
+        build-essential pkg-config libssl-dev zip procps \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 1000 --create-home --shell /bin/sh build
+# Keep toolchains read-only in the image. Project rust-toolchain files and +toolchain
+# selectors are honored, but a missing version must not install into this shared root.
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo RUSTUP_AUTO_INSTALL=0
+RUN set -eu; \
+    case "$(uname -m)" in aarch64) host=aarch64-unknown-linux-gnu ;; x86_64) host=x86_64-unknown-linux-gnu ;; *) exit 1 ;; esac; \
+    mkdir /tmp/rust-bootstrap; cd /tmp/rust-bootstrap; \
+    url="https://static.rust-lang.org/rustup/archive/1.28.2/$host/rustup-init"; \
+    curl --proto '=https' --tlsv1.2 -fsSLo rustup-init "$url"; \
+    curl --proto '=https' --tlsv1.2 -fsSLo rustup-init.sha256 "$url.sha256"; \
+    echo "$(cut -d ' ' -f1 rustup-init.sha256)  rustup-init" | sha256sum -c -; \
+    chmod 755 rustup-init; \
+    ./rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.99.1 --component rustfmt --component clippy; \
+    chmod -R a+rX /opt/cargo /opt/rustup; \
+    rm -rf /tmp/rust-bootstrap
 COPY --from=jdk11 /opt/java/openjdk /opt/jdk/11
 COPY --from=jdk17 /opt/java/openjdk /opt/jdk/17
 COPY --from=jdk21 /opt/java/openjdk /opt/jdk/21
@@ -53,6 +68,6 @@ COPY --chmod=755 build-image/browser-mcp build-image/agent-run-display /usr/loca
 ENV JAVA_HOME=/opt/jdk/21 \
     AGENT_RUN_JDKS=/opt/jdk/11,/opt/jdk/17,/opt/jdk/21,/opt/jdk/25 \
     AGENT_RUN_INIT_SCRIPTS=/etc/agent-run \
-    PATH=/opt/jdk/21/bin:$PATH
+    PATH=/opt/jdk/21/bin:/opt/cargo/bin:$PATH
 USER build
 ENTRYPOINT ["/usr/local/bin/agent-run-gate"]

@@ -5,7 +5,7 @@ containers. Connect to Ollama, LM Studio, or another compatible local server.
 Cloud providers, Claude Code, Codex, and Gemini CLI are also supported through the
 [configuration guide](docs/configuration.md).
 Agents edit your live checkout, while container mounts and network policy restrict their
-access. Gradle builds run separately from your host's build state.
+access. Gradle and Rust builds run separately from your host's build state.
 
 > [!NOTE]
 > agent-run is built for personal use: one developer on macOS
@@ -150,6 +150,9 @@ builds can take several minutes. Later launches reuse images unless their inputs
 In Pi, enter `/model` and select your local model. This local setup needs no cloud login.
 For cloud-provider login and host allowlists, see the [configuration guide](docs/configuration.md#cloud-providers).
 
+Pi's fullscreen mode can't copy to your Mac's clipboard from the container. To copy and
+paste with your terminal, set the TUI mode to `regular` in Pi's `/settings`.
+
 Browser callbacks to the container are not supported. Login and settings persist under
 `~/.agent-run/<agent>/home`. Your normal host-agent home is not automatically imported.
 Provider API keys exported in your Mac's shell are **not forwarded** into sessions.
@@ -259,6 +262,72 @@ Android builds use a container SDK. Accept required SDK licenses on your Mac fir
 agent-run copies licenses from the host SDK and refreshes them on later launches. It does
 not expose your host SDK's writable contents to builds.
 
+## Rust builds
+
+Inside the agent container:
+
+```sh
+cargo-run test
+cargo-run fmt --all
+cargo-run clippy --all-targets
+```
+
+Rust runs in the same build container and queue as Gradle. The image provides Rust 1.99.1,
+rustfmt, Clippy, and a native Linux C/C++ compiler. The agent container has no Rust compiler.
+Project `rust-toolchain.toml` files and `+toolchain` selectors are honored only when that
+toolchain is installed in the image; missing versions fail instead of downloading into
+the read-only image. Extend/rebuild the image to add a required toolchain.
+
+Cargo caches live under `/build-state/rust/cargo`. Default target output is under
+`/build-state/rust/targets/<working-directory-relative-to-checkout>`; invoking from different
+folders uses different target directories. Agents can read these results. Existing host
+`target` folders are automatically hidden, including nested targets. Explicit output
+options and build scripts can still write other writable checkout paths; review their
+changes before using host tools.
+
+These are **Linux builds**, not macOS builds. Platform-specific code and host integration
+still require macOS CI or host tests. For registry permissions, see
+[Rust dependencies](docs/configuration.md#rust-dependencies). Put registry hosts in
+`[builds].allow` for build-only access, not the shared agent/build list. After upgrading existing
+images, run `agent restart` before using the new client or target protections.
+
+## Kotlin Toolchain builds
+
+For a project with a checked-in `kotlin` wrapper and `project.yaml` or `module.yaml`, agents use:
+
+```sh
+kotlin-run build
+kotlin-run test
+kotlin-run show commands
+kotlin-run do <plugin-command>
+```
+
+The command runs the project's wrapper in the build container, with streamed output,
+exit status and cancellation. Arguments are forwarded unchanged; plugins need no agent-run
+command registration.
+
+The project's wrapper must pin Kotlin Toolchain **0.14.0 or newer**; older wrappers are refused.
+Update it on your Mac with `./kotlin update` and commit the result. Its downloads come through the dependency mirror: add the
+remotes listed in [Kotlin Toolchain dependencies](docs/configuration.md#kotlin-toolchain-dependencies).
+The Kotlin CLI and projects on JDK 25 use the image's Temurin 25; a project requiring another
+JDK version can't download one. iOS and other Kotlin/Native targets don't build in the
+container (Kotlin/Native has no compiler for Linux on arm64): build them on the Mac.
+The Mac's `~/.m2` isn't shared. Modules a project publishes to `mavenLocal` for its own
+use (such as a compiler plugin) are published once in the build container, where they're kept.
+
+Caches use `/build-state/kotlin-toolchain/{bootstrap,shared}`. Default build output uses
+`/build-state/kotlin-toolchain/projects/<wrapper-root-relative-to-checkout>/build`.
+Existing host build folders are hidden; Gradle settings and Kotlin project/module roots
+get private build-folder safety nets even when the folder is initially absent. Explicit
+output overrides and plugin source edits remain possible and need normal review.
+
+Commands are noninteractive. `kotlin-run run` keeps a queue slot until it exits. Compose
+Hot Reload MCP needs a separate bidirectional stdio/lifecycle integration and is not
+provided by this build bridge.
+
+After updating the launcher/images, run `agent restart` in the Kotlin project and start a
+new agent session so it gets the client, matching build server, protections and instructions.
+
 ## Browser and display
 
 Each session gets a display and a browser through its `playwright` MCP server. The browser
@@ -290,7 +359,7 @@ agent is editing.
   intended protected-Git setup. Engram context saves are a separate host operation.
 - Masked folders are hidden. Read-only folders cannot be edited. Private folders use
   container-owned storage instead of host contents.
-- Host Gradle state and existing supported host-agent configuration folders are protected.
+- Host Gradle state, existing Rust `target` folders, and existing supported host-agent configuration folders are protected.
   Folder protections are planned at pod creation. Newly appearing folders can require
   `agent restart`.
 - Network access is limited to shared policy destinations, the agent's own destinations,
@@ -299,7 +368,8 @@ agent is editing.
   forward your GitHub credentials.
 - On case-insensitive macOS filesystems, single-file mounts are not reliable protection
   against alternate spellings. `local.properties` is therefore accepted only with
-  `sdk.dir` and `ndk.dir` entries. Do not store secrets there.
+  `sdk.dir` and `ndk.dir` entries. Agents and builds can read it but not change it. Do not
+  store secrets there.
 - Disable IntelliJ's automatic Gradle reload before starting a session. An automatic host
   sync could execute an agent-edited build script.
 - Keep the agent-run installation, policy/state, and host-executed tooling outside the

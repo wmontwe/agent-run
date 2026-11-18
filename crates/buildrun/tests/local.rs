@@ -4,6 +4,8 @@
 use std::fs;
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
+#[cfg(target_os = "linux")]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
@@ -14,6 +16,7 @@ struct Server(Child);
 impl Drop for Server {
     fn drop(&mut self) {
         let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }
 
@@ -30,7 +33,8 @@ fn stand_in(dir: &Path) -> PathBuf {
     let script = dir.join("build.sh");
     fs::write(
         &script,
-        "#!/bin/sh\necho \"args: $*\"\necho \"display: ${DISPLAY:-none}\" >&2\ntouch \"$MARKER.$$\"\n\
+        // The version line lets it stand in for a Kotlin Toolchain wrapper too.
+        "#!/bin/sh\nkotlin_cli_version=0.14.0\necho \"args: $*\"\necho \"display: ${DISPLAY:-none}\" >&2\ntouch \"$MARKER.$$\"\n\
          [ \"$1\" = slow ] && sleep \"$2\"\n\
          [ \"$1\" = pipes ] && { sleep 30 & echo $! > \"$MARKER.child\"; sleep 30; }\nrm -f \"$MARKER.$$\"\nexit \"${EXIT:-0}\"\n",
     )
@@ -65,6 +69,15 @@ fn server_command(dir: &Path, port: u16, mirror: &str, max: usize) -> Command {
 
 impl Server {
     fn start(mut command: Command) -> Server {
+        // In production the server is PID 1. Make this standalone Linux fixture adopt
+        // its own orphan descendants too, rather than relying on the test host's init.
+        #[cfg(target_os = "linux")]
+        unsafe {
+            command.pre_exec(|| {
+                rustix::process::set_child_subreaper(Some(rustix::process::getpid()))
+                    .map_err(std::io::Error::from)
+            });
+        }
         let child = command.spawn().unwrap();
         sleep(Duration::from_millis(300));
         Server(child)
@@ -95,7 +108,19 @@ fn finishes(mut child: Child, limit: Duration) -> Option<std::process::ExitStatu
 }
 
 fn client(dir: &Path, port: u16, args: &[&str]) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_gradle-run"));
+    tool_client(env!("CARGO_BIN_EXE_gradle-run"), dir, port, args)
+}
+
+fn cargo_client(dir: &Path, port: u16, args: &[&str]) -> Command {
+    tool_client(env!("CARGO_BIN_EXE_cargo-run"), dir, port, args)
+}
+
+fn kotlin_client(dir: &Path, port: u16, args: &[&str]) -> Command {
+    tool_client(env!("CARGO_BIN_EXE_kotlin-run"), dir, port, args)
+}
+
+fn tool_client(binary: &str, dir: &Path, port: u16, args: &[&str]) -> Command {
+    let mut command = Command::new(binary);
     command
         .args(args)
         .current_dir(dir.join("checkout/app"))
@@ -116,6 +141,167 @@ fn markers(dir: &Path) -> Vec<String> {
                 .map(String::from)
         })
         .collect()
+}
+
+#[test]
+fn kotlin_client_runs_the_project_wrapper_with_isolated_state_and_exact_arguments() {
+    let dir = scratch("kotlin");
+    let root = dir.join("checkout");
+    fs::write(root.join("project.yaml"), "modules: [app]\n").unwrap();
+    fs::write(root.join("kotlin"), "#!/bin/sh\nkotlin_cli_version=0.14.0\n[ \"${JAVA_HOME-}\" = /opt/jdk/25 ] || exit 91\n[ \"${KOTLIN_CLI_JAVA_HOME-}\" = /opt/jdk/25 ] || exit 92\n[ -z \"${JAVA_TOOL_OPTIONS+x}\" ] || exit 93\n[ \"$KOTLIN_TOOLCHAIN_FUS_ENABLED\" = false ] || exit 94\nif read -r unused; then exit 95; fi\nprintf 'arg=<%s>\\n' \"$@\"\nprintf 'cwd=%s\\nbuild=%s\\ncache=%s\\ndisplay=%s\\n' \"$PWD\" \"$KOTLIN_TOOLCHAIN_BUILD_DIR\" \"$KOTLIN_SHARED_CACHE_DIR\" \"$DISPLAY\"\nexit 7\n").unwrap();
+    fs::set_permissions(root.join("kotlin"), fs::Permissions::from_mode(0o755)).unwrap();
+    let port = 23300 + (std::process::id() % 1000) as u16;
+    let _server = Server::start(server_command(&dir, port, "http://mirror:8080", 1));
+    let output = kotlin_client(
+        &dir,
+        port,
+        &[
+            "do",
+            "customCommand",
+            "--module",
+            "api",
+            "--module",
+            "a b",
+            "",
+            "λ\t%",
+        ],
+    )
+    .output()
+    .unwrap();
+    assert_eq!(output.status.code(), Some(7), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!(
+            "arg=<do>\narg=<customCommand>\narg=<--module>\narg=<api>\narg=<--module>\narg=<a b>\narg=<>\narg=<λ\t%>\ncwd={}/checkout/app\nbuild={}/state/kotlin-toolchain/projects/build\ncache={}/state/kotlin-toolchain/shared\ndisplay=:7\n",
+            dir.display(),
+            dir.display(),
+            dir.display()
+        )
+    );
+    fs::remove_file(root.join("kotlin")).unwrap();
+    let missing = kotlin_client(&dir, port, &["build"]).output().unwrap();
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("kotlin-run:"));
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("no executable kotlin"));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn cancelling_kotlin_releases_the_shared_queue_for_cargo() {
+    let dir = scratch("kotlin-queue");
+    let root = dir.join("checkout");
+    fs::write(root.join("module.yaml"), "product: jvm/app\n").unwrap();
+    fs::copy(stand_in(&dir), root.join("kotlin")).unwrap();
+    let port = 24300 + (std::process::id() % 1000) as u16;
+    let _server = start_server(&dir, port);
+    let mut kotlin = kotlin_client(&dir, port, &["slow", "30"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while markers(&dir).is_empty() && Instant::now() < deadline {
+        sleep(Duration::from_millis(50));
+    }
+    let pids = markers(&dir);
+    let mut next = cargo_client(&dir, port, &["fast"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    sleep(Duration::from_millis(300));
+    let running = markers(&dir).len();
+    kotlin.kill().unwrap();
+    kotlin.wait().unwrap();
+    let mut stderr = next.stderr.take().unwrap();
+    let status = finishes(next, Duration::from_secs(10));
+    let mut diagnostic = String::new();
+    stderr.read_to_string(&mut diagnostic).unwrap();
+    assert_eq!(pids.len(), 1, "Kotlin must run before Cargo is queued");
+    assert_eq!(running, 1, "Cargo must share Kotlin's queue");
+    assert_eq!(status.and_then(|s| s.code()), Some(3));
+    assert!(diagnostic.contains("waiting: 1 build(s)"), "{diagnostic}");
+    assert!(!alive(&pids[0]), "Kotlin survived cancellation");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn cargo_preserves_arguments_cwd_environment_and_status_without_a_gradle_wrapper() {
+    let dir = scratch("cargo");
+    fs::remove_file(dir.join("checkout/gradlew")).unwrap();
+    let script = dir.join("cargo.sh");
+    fs::write(
+        &script,
+        "#!/bin/sh\nfor arg do printf '<%s>\\n' \"$arg\"; done\nprintf 'cwd=%s\\ncargo=%s\\ntarget=%s\\nrustup=%s\\nauto=%s\\n' \"$PWD\" \"$CARGO_HOME\" \"$CARGO_TARGET_DIR\" \"$RUSTUP_HOME\" \"$RUSTUP_AUTO_INSTALL\"\necho \"display: $DISPLAY\" >&2\nexit 7\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    let port = 20300 + (std::process::id() % 1000) as u16;
+    let mut server = server_command(&dir, port, "http://mirror:8080", 1);
+    server.env("AGENT_RUN_BUILD_COMMAND", script);
+    let _server = Server::start(server);
+    let output = cargo_client(&dir, port, &["+1.99.1", "test", "--", "a b", "", "λ%\\t"])
+        .output()
+        .unwrap();
+    let expected = format!(
+        "<+1.99.1>\n<test>\n<-->\n<a b>\n<>\n<λ%\\t>\ncwd={}/checkout/app\ncargo={}/state/rust/cargo\ntarget={}/state/rust/targets/app\nrustup=/opt/rustup\nauto=0\n",
+        dir.display(),
+        dir.display(),
+        dir.display()
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("display: :7"));
+    assert_eq!(output.status.code(), Some(7));
+
+    let output = client(&dir, port, &["test"]).output().unwrap();
+    assert!(String::from_utf8_lossy(&output.stderr).contains("gradle-run: no gradlew"));
+    let mut outside = cargo_client(&dir, port, &["test"]);
+    outside.current_dir(&dir);
+    let output = outside.output().unwrap();
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cargo-run:"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("outside the checkout"));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn cargo_and_gradle_share_the_queue_and_cargo_cancellation_frees_it() {
+    let dir = scratch("mixed");
+    let port = 21300 + (std::process::id() % 1000) as u16;
+    let _server = start_server(&dir, port);
+    let mut cargo = cargo_client(&dir, port, &["slow", "30"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while markers(&dir).is_empty() && Instant::now() < deadline {
+        sleep(Duration::from_millis(50));
+    }
+    let pids = markers(&dir);
+    assert_eq!(
+        pids.len(),
+        1,
+        "Cargo must be running before Gradle is queued"
+    );
+    let mut gradle = client(&dir, port, &["fast"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    sleep(Duration::from_millis(300));
+    assert_eq!(markers(&dir).len(), 1, "Gradle must share Cargo's queue");
+    cargo.kill().unwrap();
+    cargo.wait().unwrap();
+    let mut stderr = gradle.stderr.take().unwrap();
+    assert_eq!(
+        finishes(gradle, Duration::from_secs(10)).and_then(|s| s.code()),
+        Some(3)
+    );
+    let mut diagnostic = String::new();
+    stderr.read_to_string(&mut diagnostic).unwrap();
+    assert!(diagnostic.contains("waiting: 1 build(s)"));
+    assert!(!alive(&pids[0]), "Cargo's process survived cancellation");
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

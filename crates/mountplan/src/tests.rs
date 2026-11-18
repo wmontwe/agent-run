@@ -65,6 +65,43 @@ fn private(relative: &str) -> Kind {
 }
 
 #[test]
+fn kotlin_projects_have_private_build_safety_nets_and_pinned_module_parents() {
+    let root = scratch();
+    for folder in [".git", "build", "app/src"] {
+        fs::create_dir_all(root.join(folder)).unwrap();
+    }
+    fs::write(root.join("project.yaml"), "modules: [app]\n").unwrap();
+    fs::write(root.join("app/module.yaml"), "product: jvm/app\n").unwrap();
+    fs::write(root.join("build/host-sentinel"), "host-only").unwrap();
+    let inspection = workspace::inspect(&root, &Rules::default()).unwrap();
+    let plan = plan(&root, &inspection, "state").unwrap();
+    let mounts = kinds(&plan);
+    assert!(mounts.contains(&("build".into(), private("build"))));
+    assert!(mounts.contains(&("app".into(), Kind::Pin)));
+    assert!(mounts.contains(&("app/build".into(), private("app/build"))));
+    assert_eq!(
+        fs::read_to_string(root.join("build/host-sentinel")).unwrap(),
+        "host-only"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn rust_targets_are_masked_and_their_ancestors_are_pinned() {
+    let root = scratch();
+    fs::create_dir_all(root.join(".git")).unwrap();
+    fs::create_dir_all(root.join("tools/helper/Target/debug")).unwrap();
+    let inspection = workspace::inspect(&root, &Rules::default()).unwrap();
+    let plan = plan(&root, &inspection, "state").unwrap();
+    let mounts = kinds(&plan);
+    assert!(mounts.contains(&("tools".into(), Kind::Pin)));
+    assert!(mounts.contains(&("tools/helper".into(), Kind::Pin)));
+    assert!(mounts.contains(&("tools/helper/Target".into(), Kind::Mask)));
+    assert!(!mounts.iter().any(|(path, _)| path.ends_with("/debug")));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn plans_parents_before_children_with_pins_for_every_nested_target() {
     let (root, inspection) = checkout();
     let plan = plan(&root, &inspection, "state").unwrap();
@@ -126,7 +163,46 @@ fn turns_the_plan_into_podman_arguments() {
     assert!(args.contains(&format!(
         "--mount type=volume,src=state,dst={r}/build,subpath=private/build"
     )));
-    assert!(args.ends_with(&format!("--security-opt mask={r}/.signing:{r}/app/build:{r}/build-logic/.kotlin:{r}/lib/nested/build")));
+    // Masks: an empty read-only tmpfs each, never a copy of what's below.
+    for masked in [
+        ".signing",
+        "app/build",
+        "build-logic/.kotlin",
+        "lib/nested/build",
+    ] {
+        assert!(
+            args.contains(&format!(
+                "--mount type=tmpfs,dst={r}/{masked},ro=true,tmpfs-mode=0555,tmpfs-size=4k,notmpcopyup"
+            )),
+            "{masked}: {args}"
+        );
+    }
+    assert!(!args.contains("--security-opt"), "{args}");
+}
+
+#[test]
+fn refuses_a_rule_folder_inside_a_masked_one() {
+    let (root, _) = checkout();
+    fs::create_dir_all(root.join(".signing/keys")).unwrap();
+    let (mask, read_only, private) = (
+        strings(&[".signing"]),
+        strings(&[".signing/keys"]),
+        strings(&[]),
+    );
+    let inspection = workspace::inspect(
+        &root,
+        &Rules {
+            mask: &mask,
+            read_only: &read_only,
+            private: &private,
+        },
+    )
+    .unwrap();
+    let error = plan(&root, &inspection, "state").unwrap_err().to_string();
+    assert!(
+        error.contains(".signing/keys is inside the masked folder .signing"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -186,12 +262,11 @@ fn report_for(plan: &Plan) -> String {
                 "{index} 1 0:50 {} {target} rw,relatime - virtiofs share rw",
                 share_root(&mount.relative)
             ),
-            Kind::ReadOnly => format!(
+            Kind::ReadOnly | Kind::ReadOnlyFile => format!(
                 "{index} 1 0:50 {} {target} ro,relatime - virtiofs share rw",
                 share_root(&mount.relative)
             ),
             Kind::Mask => format!("{index} 1 0:60 / {target} ro,relatime - tmpfs tmpfs ro"),
-            Kind::Hide => format!("{index} 1 0:7 /null {target} ro,nosuid - devtmpfs devtmpfs rw"),
             Kind::Private { subpath } => format!(
                 "{index} 1 0:70 /containers/storage/volumes/state/_data/{subpath} {target} rw - xfs /dev/vda4 rw"
             ),
@@ -199,8 +274,13 @@ fn report_for(plan: &Plan) -> String {
         text.push_str(&format!("mount {line}\n"));
     }
     for (index, mount) in plan.mounts.iter().enumerate() {
+        let entries = match mount.kind {
+            Kind::Mask => "0",
+            Kind::ReadOnlyFile => "-",
+            _ => "3",
+        };
         text.push_str(&format!(
-            "target {index} 50 {}\n",
+            "target {index} 50 {} {entries}\n",
             mount.host_ino.unwrap_or(1000 + index as u64)
         ));
     }
@@ -230,6 +310,12 @@ fn blocks_every_tampering_case() {
         .position(|m| m.relative == "gradle/wrapper")
         .unwrap();
     let wrapper_ino = plan.mounts[wrapper].host_ino.unwrap();
+    let signing = plan
+        .mounts
+        .iter()
+        .position(|m| m.relative == ".signing")
+        .unwrap();
+    let signing_ino = 1000 + signing;
 
     let cases: Vec<(&str, String, &str)> = vec![
         (
@@ -275,6 +361,24 @@ fn blocks_every_tampering_case() {
             "not masked",
         ),
         (
+            // Podman's tmpcopyup: the host's contents copied into the mask.
+            "mask with contents",
+            good.replace(
+                &format!("target {signing} 50 {signing_ino} 0"),
+                &format!("target {signing} 50 {signing_ino} 1"),
+            ),
+            ".signing: masked but not empty (1 entries)",
+        ),
+        (
+            // Podman's own mask: a folder the build can't list.
+            "mask that can't be listed",
+            good.replace(
+                &format!("target {signing} 50 {signing_ino} 0"),
+                &format!("target {signing} 50 {signing_ino} -"),
+            ),
+            ".signing: masked folder can't be listed",
+        ),
+        (
             "pin from elsewhere",
             good.replace(
                 &format!("/host{r}/lib {r}/lib "),
@@ -290,11 +394,14 @@ fn blocks_every_tampering_case() {
             "{name}: expected {expected:?}, got {found:?}"
         );
     }
-    assert_eq!(problems(&plan, "target 0 50 1\n"), ["checkout not mounted"]);
+    assert_eq!(
+        problems(&plan, "target 0 50 1 3\n"),
+        ["checkout not mounted"]
+    );
 }
 
 #[test]
-fn local_properties_is_hidden_and_verified_as_dev_null() {
+fn local_properties_is_a_read_only_regular_file_and_verified() {
     let (root, _) = checkout();
     fs::write(root.join("local.properties"), "sdk.dir=/Users/me/sdk\n").unwrap();
     let (mask, read_only, private) = (strings(&[".signing"]), strings(&[".git"]), strings(&[]));
@@ -308,12 +415,15 @@ fn local_properties_is_hidden_and_verified_as_dev_null() {
     )
     .unwrap();
     let plan = plan(&root, &inspection, "state").unwrap();
-    assert!(kinds(&plan).contains(&("local.properties".into(), Kind::Hide)));
+    assert!(kinds(&plan).contains(&("local.properties".into(), Kind::ReadOnlyFile)));
+    let file = format!("{}/local.properties", root.display());
+    let args = plan.podman_args().join(" ");
     assert!(
-        plan.podman_args()
-            .join(" ")
-            .contains(&format!("{}/local.properties", root.display()))
+        args.contains(&format!("type=bind,src={file},dst={file},ro")),
+        "{args}"
     );
+    // A device (a mask's /dev/null) is no input Gradle accepts.
+    assert!(!args.contains(&format!("type=tmpfs,dst={file},")), "{args}");
     assert_eq!(Plan::from_text(&plan.to_text()).unwrap(), plan);
     let report = report_for(&plan);
     assert!(
@@ -321,17 +431,26 @@ fn local_properties_is_hidden_and_verified_as_dev_null() {
         "{:?}",
         problems(&plan, &report)
     );
-    let shown = report.replace(
-        &format!("/null {}/local.properties", root.display()),
-        &format!(
-            "/host{0}/local.properties {0}/local.properties",
-            root.display()
-        ),
+    let line = format!("/host{file} {file} ro,relatime - virtiofs share rw");
+    assert!(report.contains(&line), "{report}");
+    let writable = report.replace(
+        &line,
+        &format!("/host{file} {file} rw,relatime - virtiofs share rw"),
     );
     assert!(
-        problems(&plan, &shown)
+        problems(&plan, &writable)
             .iter()
-            .any(|p| p.contains("not hidden")),
-        "an unhidden file is caught"
+            .any(|p| p.contains("local.properties: mounted read-write")),
+        "a writable file is caught"
+    );
+    let device = report.replace(
+        &line,
+        &format!("/null {file} ro,nosuid - devtmpfs devtmpfs rw"),
+    );
+    assert!(
+        problems(&plan, &device)
+            .iter()
+            .any(|p| p.contains("local.properties: source devtmpfs /null")),
+        "another source is caught"
     );
 }

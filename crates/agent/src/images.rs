@@ -48,7 +48,7 @@ fn crate_files(repository: &Path, name: &str) -> Result<Vec<String>, String> {
 pub fn ensure(podman: &Podman, repository: &Path, agent_name: &str) -> Result<(), String> {
     let agent_image = agent(agent_name);
     let agent_arg = format!("AGENT={agent_name}");
-    // The images' Rust binaries: the gate and gradle-run.
+    // The images' Rust binaries: the gate, build clients and build server.
     let rust_inputs = [
         vec!["Cargo.toml".to_owned(), "Cargo.lock".to_owned()],
         crate_files(repository, "gate")?,

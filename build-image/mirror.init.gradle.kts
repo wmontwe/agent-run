@@ -23,8 +23,9 @@ fun redirect(repo: ArtifactRepository) {
     val id = remotes[key] ?: return logger.warn("agent-run: no mirror for ${repo.name} ($key)")
     val target = java.net.URI("$mirror/$id/")
     when (repo) {
-        is MavenArtifactRepository -> { repo.setUrl(target); repo.isAllowInsecureProtocol = true }
-        is IvyArtifactRepository -> { repo.setUrl(target); repo.isAllowInsecureProtocol = true }
+        // HTTPS with agent-run's authority, which the build JVMs trust: no insecure protocol.
+        is MavenArtifactRepository -> repo.setUrl(target)
+        is IvyArtifactRepository -> repo.setUrl(target)
     }
 }
 

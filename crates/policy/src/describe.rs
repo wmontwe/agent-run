@@ -37,6 +37,10 @@ impl Policy {
                 "reaches",
                 list(self.project_allow.iter().map(Destination::short)),
             ),
+            (
+                "build-only",
+                list(self.build_allow.iter().map(Destination::short)),
+            ),
             ("GitHub, read-only", list(self.github_repos.iter().cloned())),
             ("masked", list(self.workspace.mask.iter().cloned())),
             ("read-only", list(self.workspace.read_only.iter().cloned())),
@@ -51,6 +55,10 @@ impl Policy {
         let mut project = vec![
             ("also reaches", list(own)),
             ("this session", list(session.iter().map(Destination::short))),
+            (
+                "build-only hosts",
+                list(self.for_build(checkout).iter().map(Destination::short)),
+            ),
         ];
         project.push(("build memory", mib(view.build_memory)));
         if let Some(engram) = view.engram {

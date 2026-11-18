@@ -19,7 +19,7 @@ fn exists(kind: &str, name: &str) -> bool {
 /// What a failed start may leave in the scratch home: proxy credentials, session files.
 fn files_left(scratch: &common::Scratch, keep: usize) -> Vec<String> {
     let mut left = Vec::new();
-    for dir in ["state/proxy-users", "state/sessions"] {
+    for dir in ["state/proxy-users", "state/sessions", "state/build-proxies"] {
         let count = std::fs::read_dir(scratch.base.join(dir))
             .map(|d| d.count())
             .unwrap_or(0);

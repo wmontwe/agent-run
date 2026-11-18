@@ -40,6 +40,7 @@ fn documented_policy_examples_are_valid() {
 fn defaults_when_sections_are_missing() {
     let policy = ok("version = 1");
     assert!(policy.project_allow.is_empty());
+    assert!(policy.build_allow.is_empty());
     assert_eq!(policy.workspace, WorkspaceRules::default());
     assert_eq!(
         (
@@ -167,6 +168,46 @@ builds.memory = "16g"
             .build_memory,
         8 << 30
     );
+}
+
+#[test]
+fn build_allowlists_merge_without_granting_destinations_to_agents() {
+    let policy = ok(r#"version = 1
+[network.project]
+allow = ["shared.example.org"]
+[builds]
+allow = ["index.crates.io"]
+[projects."/work/app".builds]
+allow = ["static.crates.io", "index.crates.io"]
+[projects."/work/other".builds]
+allow = ["other.example.org"]
+"#);
+    let app = Path::new("/work/app");
+    assert_eq!(
+        policy.for_build(app),
+        [
+            destination("index.crates.io").unwrap(),
+            destination("static.crates.io").unwrap()
+        ]
+    );
+    assert_eq!(
+        policy.for_build(Path::new("/work/absent")),
+        [destination("index.crates.io").unwrap()]
+    );
+    assert_eq!(
+        policy.for_project(app).allow,
+        [&destination("shared.example.org").unwrap()]
+    );
+    for agent in ["claude", "codex", "gemini", "pi"] {
+        assert!(policy.for_agent(app, agent).allow.is_empty());
+    }
+    assert!(policy.describe(app, &[]).contains("static.crates.io"));
+    assert!(err("version = 1\n[builds]\nallow = [\"10.0.0.1\"]").contains("builds.allow"));
+    assert!(
+        err("version = 1\n[projects.\"/work/app\".builds]\nallow = [\"*.example.org\"]")
+            .contains("projects.\"/work/app\".builds.allow")
+    );
+    assert!(err("version = 1\n[builds]\nalow = []").contains("alow"));
 }
 
 #[test]

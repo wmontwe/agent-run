@@ -85,6 +85,57 @@ fn finds_settings_roots_host_state_and_safety_nets() {
 }
 
 #[test]
+fn kotlin_manifests_get_build_safety_nets_without_gradle_settings() {
+    let root = scratch();
+    for folder in [".git", "app/src", "BUILD", "tools/Build"] {
+        fs::create_dir_all(root.join(folder)).unwrap();
+    }
+    fs::write(root.join("project.yaml"), "modules: [app]\n").unwrap();
+    fs::write(root.join("app/module.yaml"), "product: jvm/app\n").unwrap();
+    fs::write(root.join("tools/module.yaml"), "product: jvm/app\n").unwrap();
+    let inspection = inspect(&root, &Rules::default()).unwrap();
+    assert_eq!(inspection.settings_roots, ["", "app", "tools"]);
+    assert_eq!(inspection.safety_net, ["BUILD", "app/build", "tools/Build"]);
+    assert!(inspection.host_state.is_empty());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn explicit_build_folder_rules_do_not_conflict_with_automatic_safety_nets() {
+    let root = scratch();
+    fs::create_dir_all(root.join(".git")).unwrap();
+    fs::create_dir_all(root.join("build")).unwrap();
+    fs::write(root.join("module.yaml"), "product: jvm/app\n").unwrap();
+    let folders = strings(&["build"]);
+    for rules in [
+        Rules {
+            mask: &folders,
+            ..Rules::default()
+        },
+        Rules {
+            read_only: &folders,
+            ..Rules::default()
+        },
+        Rules {
+            private: &folders,
+            ..Rules::default()
+        },
+    ] {
+        let inspection = inspect(&root, &rules).unwrap();
+        assert!(inspection.safety_net.is_empty());
+        assert!(inspection.host_state.is_empty());
+    }
+    // When this filesystem aliases names, a differently spelled rule is the same target.
+    if root.join("BUILD").exists() {
+        let aliases = strings(&["BUILD"]);
+        let inspection = inspect(&root, &rules(&aliases, &[], &[])).unwrap();
+        assert!(inspection.safety_net.is_empty());
+        assert!(inspection.host_state.is_empty());
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn sorts_rule_folders_and_skips_them_in_the_walk() {
     let root = checkout();
     fs::create_dir_all(root.join("target/debug/build")).unwrap();
@@ -147,6 +198,53 @@ fn refuses_gradle_state_that_is_a_link_or_file() {
             .0
             .contains("lib/.kotlin")
     );
+}
+
+#[test]
+fn protects_rust_targets_in_any_spelling_without_walking_their_contents() {
+    let root = checkout();
+    fs::create_dir_all(root.join("Target/debug/build")).unwrap();
+    fs::create_dir_all(root.join("tools/helper/target/debug")).unwrap();
+    let inspection = inspect(&root, &Rules::default()).unwrap();
+    assert!(inspection.host_state.contains(&"Target".to_owned()));
+    assert!(
+        inspection
+            .host_state
+            .contains(&"tools/helper/target".to_owned())
+    );
+    assert!(
+        !inspection
+            .host_state
+            .iter()
+            .any(|p| p.starts_with("Target/"))
+    );
+
+    let mask = strings(&["Target"]);
+    let inspection = inspect(&root, &rules(&mask, &[], &[])).unwrap();
+    assert_eq!(inspection.mask, ["Target"]);
+    assert!(!inspection.host_state.contains(&"Target".to_owned()));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn refuses_rust_targets_that_cannot_be_protected() {
+    let root = checkout();
+    symlink(scratch(), root.join("target")).unwrap();
+    assert!(
+        inspect(&root, &Rules::default())
+            .unwrap_err()
+            .0
+            .contains("target must be a folder")
+    );
+    fs::remove_file(root.join("target")).unwrap();
+    fs::write(root.join("target"), "").unwrap();
+    assert!(
+        inspect(&root, &Rules::default())
+            .unwrap_err()
+            .0
+            .contains("target must be a folder")
+    );
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

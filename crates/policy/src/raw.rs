@@ -76,6 +76,8 @@ pub struct AgentNetwork {
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Builds {
+    #[serde(default)]
+    pub allow: Vec<String>,
     #[serde(rename = "max-concurrent")]
     pub max_concurrent: Option<u32>,
     pub memory: Option<String>,
@@ -101,5 +103,7 @@ pub struct ProjectNetwork {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectBuilds {
+    #[serde(default)]
+    pub allow: Vec<String>,
     pub memory: Option<String>,
 }

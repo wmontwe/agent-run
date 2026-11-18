@@ -1,4 +1,4 @@
-//! Inspects a checkout before mount planning: which folders the rules name, where the host's Gradle state is, and
+//! Inspects a checkout before mount planning: which folders the rules name, where host build state is, and
 //! whether anything on the host would act on agent edits by itself.
 //!
 //! Nothing here changes the checkout. Paths in results are relative to the checkout
@@ -27,12 +27,12 @@ pub struct Rules<'a> {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Inspection {
-    /// Folders holding a settings script: the root build and each included build.
+    /// Folders holding Gradle settings or a Kotlin Toolchain project/module manifest.
     pub settings_roots: Vec<String>,
-    /// The host's Gradle state to mask: every `build`, `.gradle` and `.kotlin` folder,
-    /// except the `build` of a settings root (see `safety_net`).
+    /// The host's build state to mask: every `build`, `.gradle`, `.kotlin` and `target` folder,
+    /// except the `build` of a build root (see `safety_net`).
     pub host_state: Vec<String>,
-    /// The `build` folder of each settings root, mounted private whether it exists or
+    /// The `build` folder of each build root, mounted private whether it exists or
     /// not, so a build failing before its redirection applies can't write the checkout.
     pub safety_net: Vec<String>,
     /// Rule folders that exist, by kind.
@@ -43,10 +43,10 @@ pub struct Inspection {
     pub absent: Vec<String>,
     /// `.git` files below the root (submodules, worktrees), checked by [`check_git`].
     pub gitfiles: Vec<String>,
-    /// Single files hidden from containers: `local.properties`. A mask over a file is bypassed
-    /// through another spelling on a case-insensitive checkout, so it may only hold what isn't
-    /// secret (see [`android`]).
-    pub hidden: Vec<String>,
+    /// Single files containers read but can't change: `local.properties`, whose `sdk.dir` host
+    /// tools run the SDK from. A mount over a file is bypassed through another spelling on a
+    /// case-insensitive checkout, so it may only hold what isn't secret (see [`android`]).
+    pub read_only_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,8 +64,13 @@ fn error(message: impl Into<String>) -> WorkspaceError {
     WorkspaceError(message.into())
 }
 
-const STATE_NAMES: [&str; 3] = ["build", ".gradle", ".kotlin"];
-const SETTINGS_SCRIPTS: [&str; 2] = ["settings.gradle.kts", "settings.gradle"];
+const STATE_NAMES: [&str; 4] = ["build", ".gradle", ".kotlin", "target"];
+const BUILD_ROOT_FILES: [&str; 4] = [
+    "settings.gradle.kts",
+    "settings.gradle",
+    "project.yaml",
+    "module.yaml",
+];
 
 /// Inspects `checkout`, which must be canonical.
 /// Agent tools' project configuration (hooks, MCP servers, skills): host agents act on it, so a
@@ -86,7 +91,9 @@ pub fn inspect(checkout: &Path, rules: &Rules) -> Result<Inspection, WorkspaceEr
 
     let mut inspection = Inspection::default();
     if android::check_local_properties(checkout)? {
-        inspection.hidden.push("local.properties".to_owned());
+        inspection
+            .read_only_files
+            .push("local.properties".to_owned());
     }
     for (kind, folders) in [
         ("mask", rules.mask),
@@ -141,17 +148,40 @@ pub fn inspect(checkout: &Path, rules: &Rules) -> Result<Inspection, WorkspaceEr
         &mut inspection.gitfiles,
     )?;
     inspection.settings_roots.sort();
+    let protected: Vec<PathBuf> = inspection
+        .mask
+        .iter()
+        .chain(&inspection.read_only)
+        .chain(&inspection.private)
+        .map(|folder| {
+            checkout
+                .join(folder)
+                .canonicalize()
+                .map_err(|e| error(format!("{}: {e}", checkout.join(folder).display())))
+        })
+        .collect::<Result<_, _>>()?;
     for root in &inspection.settings_roots {
         // The root's build folder as it's spelled, if it exists: one folder, one mount.
         let spelled = state
             .iter()
             .find(|f| f.eq_ignore_ascii_case(&join(root, "build")))
             .cloned();
-        inspection
-            .safety_net
-            .push(spelled.unwrap_or_else(|| join(root, "build")));
+        let target = spelled.unwrap_or_else(|| join(root, "build"));
+        let already_protected = checkout
+            .join(&target)
+            .canonicalize()
+            .is_ok_and(|path| protected.contains(&path));
+        if !already_protected {
+            inspection.safety_net.push(target);
+        }
     }
-    state.retain(|folder| !inspection.safety_net.contains(folder));
+    state.retain(|folder| {
+        !inspection.safety_net.contains(folder)
+            && !checkout
+                .join(folder)
+                .canonicalize()
+                .is_ok_and(|path| protected.contains(&path))
+    });
     state.sort();
     inspection.host_state = state;
     Ok(inspection)
@@ -198,16 +228,21 @@ fn walk(
             .map_err(|e| error(format!("{child}: {e}")))?;
         // Any spelling: on a case-insensitive checkout, host Gradle's `build` is a `BUILD` too.
         let lower = name.to_lowercase();
+        if skip.contains(&child.as_str()) {
+            continue;
+        }
         if STATE_NAMES.contains(&lower.as_str()) {
             if kind.is_symlink() || !kind.is_dir() {
                 return Err(error(format!(
-                    "{child} must be a folder or absent: Gradle state can't be protected through a link or file"
+                    "{child} must be a folder or absent: build state can't be protected through a link or file"
                 )));
             }
             state.push(child);
         } else if name == ".git" && kind.is_file() && !relative_dir.is_empty() {
             gitfiles.push(child);
-        } else if SETTINGS_SCRIPTS.contains(&lower.as_str()) && kind.is_file() {
+        } else if BUILD_ROOT_FILES.contains(&lower.as_str())
+            && (kind.is_file() || kind.is_symlink())
+        {
             if !settings_roots.contains(&relative_dir.to_owned()) {
                 settings_roots.push(relative_dir.to_owned());
             }

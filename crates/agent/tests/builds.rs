@@ -144,6 +144,23 @@ fn gradle_run_builds_through_the_mirror_with_state_outside_the_checkout() {
             .status
             .success(),
         ),
+        (
+            // Tools that write under ~ (~/.android, ~/.m2, the JVM's user.home) work.
+            "the build container's home is writable",
+            exec(
+                &session.project.build_container(),
+                Path::new("/"),
+                "touch ~/.agent-run-check && test -d ~/.gradle",
+            )
+            .status
+            .success(),
+        ),
+        (
+            "agents don't see the build container's home",
+            !exec(&agent, &root, "test -e /build-state/.agent-run-check")
+                .status
+                .success(),
+        ),
     ];
     for (name, ok) in checks {
         if !ok {

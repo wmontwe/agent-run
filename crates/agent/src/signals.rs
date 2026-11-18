@@ -2,29 +2,16 @@
 //! started is still ended and nothing of it is left. The handler only sets a flag; whoever waits
 //! checks it.
 
+use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static STOPPED: AtomicBool = AtomicBool::new(false);
 
-extern "C" fn on_signal(_: i32) {
-    STOPPED.store(true, Ordering::SeqCst);
-}
-
-unsafe extern "C" {
-    fn signal(signum: i32, handler: extern "C" fn(i32)) -> usize;
-}
-
-const SIGHUP: i32 = 1;
-const SIGINT: i32 = 2;
-const SIGTERM: i32 = 15;
-
 /// Records SIGTERM, SIGHUP and SIGINT instead of dying on them.
 pub fn install() {
-    for signum in [SIGHUP, SIGINT, SIGTERM] {
-        // Safety: the handler only stores into an atomic, which is async-signal-safe.
-        unsafe {
-            signal(signum, on_signal);
-        }
+    for signal in [SIGHUP, SIGINT, SIGTERM] {
+        // None of these is a signal signal-hook refuses, so registering can't fail.
+        let _ = signal_hook::flag::register(signal, &STOPPED);
     }
 }
 

@@ -148,12 +148,14 @@ pub fn prepare(
                 }
                 Ok(plan)
             })?;
+            let build_identity = Services::build_identity(&podman, &paths, &project)?;
             progress.step("services", || {
                 Services::new(&podman, &paths).start(&policy, &paths, &project.network())
             })?;
             progress.step("build container", || {
                 let settings = builds::Settings {
                     image: images::BUILD,
+                    proxy: Some((&build_identity.user, &build_identity.url)),
                     memory: policy.for_project(checkout).build_memory,
                     cpus: policy.build_cpus,
                     max_concurrent: policy.max_concurrent_builds,
@@ -163,12 +165,17 @@ pub fn prepare(
                         .map(|(id, url)| format!("{id}={url}"))
                         .collect(),
                     mirror_url: mirror::URL,
+                    mirror_ca: &services::mirror_tls(&paths).ca_cert(),
                     sdk_dir: sdk_dir.as_deref(),
                     host_sdk: sdk_dir
                         .clone()
                         .or_else(|| std::env::var_os("ANDROID_HOME").map(PathBuf::from))
                         .or(Some(home.join("Library/Android/sdk"))),
                     licenses_copied: &paths.state.join(format!("{}.licenses", project.id)),
+                    link_mounts: engram
+                        .as_ref()
+                        .map(engram::Engram::link_mounts)
+                        .unwrap_or_default(),
                 };
                 builds::ensure(&podman, &project, &plan, &settings)
             })?;
@@ -249,7 +256,7 @@ pub fn prepare(
                     let args = sessions::run_args(&project, &plan, &host, &settings, &command)?;
                     podman.run(&args).map(|_| ()).map_err(|e| e.to_string())?;
                     // The session's own rules, before the gate releases it.
-                    Services::new(&podman, &paths).rules(&policy, &paths)
+                    Services::new(&podman, &paths).rules(&paths)
                 })
             })();
             if let Err(e) = started {
@@ -419,9 +426,7 @@ impl Session {
             }
             // The session's identity is gone: its rules go too.
             Ok(false) => {
-                if let Err(e) =
-                    Services::new(&self.podman, &self.paths).rules(&self.policy, &self.paths)
-                {
+                if let Err(e) = Services::new(&self.podman, &self.paths).rules(&self.paths) {
                     eprintln!("agent-run: warning: {e}");
                 }
             }
@@ -540,9 +545,10 @@ fn forget_pod(
 ) -> Result<(), String> {
     approvals::Session::clear_project(&paths.state, &project.id).map_err(|e| e.to_string())?;
     engram::Engram::remove(podman, project);
+    Services::forget_build(paths, project);
     let services = Services::new(podman, paths);
-    if let Some(policy) = policy {
-        services.rules(policy, paths)?;
+    if policy.is_some() {
+        services.rules(paths)?;
     }
     services.leave(&project.network())?;
     pod::remove_network(podman, project).map_err(|e| e.to_string())

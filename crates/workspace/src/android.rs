@@ -8,13 +8,13 @@ use crate::{WorkspaceError, error};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-/// Keys `local.properties` may hold. It's hidden from containers, but a mask over a single file
-/// is bypassed through another spelling on a case-insensitive checkout: it must hold nothing
-/// secret.
+/// Keys `local.properties` may hold. Containers read it (builds need `sdk.dir`), and a read-only
+/// mount over a single file is bypassed through another spelling on a case-insensitive
+/// checkout: it must hold nothing secret.
 const LOCAL_KEYS: [&str; 2] = ["sdk.dir", "ndk.dir"];
 
-/// Whether the checkout has a `local.properties` to hide; refuses one that holds more than the
-/// SDK paths, or isn't a regular file.
+/// Whether the checkout has a `local.properties` to mount read-only; refuses one that holds more
+/// than the SDK paths, or isn't a regular file.
 pub fn check_local_properties(checkout: &Path) -> Result<bool, WorkspaceError> {
     let file = checkout.join("local.properties");
     let Ok(meta) = fs::symlink_metadata(&file) else {
@@ -34,7 +34,7 @@ pub fn check_local_properties(checkout: &Path) -> Result<bool, WorkspaceError> {
         let key = line.split(['=', ':']).next().unwrap_or("").trim();
         if !LOCAL_KEYS.contains(&key) {
             return Err(error(format!(
-                "local.properties holds {key}: it's hidden from agents, but on this case-insensitive checkout another spelling still reads it; move secrets out (only {} may stay)",
+                "local.properties holds {key}: agents can read it; move secrets out (only {} may stay)",
                 LOCAL_KEYS.join(" and ")
             )));
         }

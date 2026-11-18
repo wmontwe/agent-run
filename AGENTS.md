@@ -16,7 +16,7 @@ it can write. agent-run enforces protections before the command runs.
 | Path | Role |
 |---|---|
 | `crates/policy` | Reads and validates `~/.agent-run/policy.toml` |
-| `crates/workspace` | Inspects a checkout: rule folders, settings roots, the host's Gradle state, and the IntelliJ, Git config and engram checks |
+| `crates/workspace` | Inspects a checkout: rule folders, settings roots, the host's Gradle/Rust state, and the IntelliJ, Git config and engram checks |
 | `crates/mountplan` | The mount plan, its Podman arguments and hash, and the verification of a gated container |
 | `crates/gate` | The container entrypoint that holds the command until the mounts are verified (Linux, static) |
 | `crates/podman` | Podman process execution, shared-service lifecycle and object names |
@@ -30,11 +30,11 @@ it can write. agent-run enforces protections before the command runs.
 | `crates/builds` | The build container: volumes, settings, Podman arguments |
 | `crates/vision` | A session's display and browser in the build container, and its MCP entry |
 | `crates/engram` | A project's engram service: its container, socket, the agent's read-only mounts, the save on the host |
-| `crates/buildrun` | `gradle-run` and its server in the build container (Linux, static) |
+| `crates/buildrun` | `gradle-run`, `cargo-run`, `kotlin-run` and their shared server in the build container (Linux, static) |
 | `crates/agent` | The launcher: runs the steps in order and prints progress. `services.rs` wires the shared services |
 | `bin/agent` | Builds and runs the launcher |
-| `image/` | The agent image (`Containerfile`, built with the gate and `gradle-run`) |
-| `build-image/` | The build image: JDKs, the gate, `gradle-run-server`, the init scripts, each session's display and browser (`agent-run-display`, `browser-mcp`) |
+| `image/` | The agent image (`Containerfile`, built with the gate, `gradle-run`, `cargo-run` and `kotlin-run`) |
+| `build-image/` | The build image: JDKs, Rust/rustfmt/Clippy, the gate, `gradle-run-server`, the init scripts, each session's display and browser (`agent-run-display`, `browser-mcp`) |
 | `agents/<agent>/` | The agent CLI's pinned `package.json` and `package-lock.json` |
 | `proxy/` | The Squid, GitHub relay (`github-relay/`) and mirror (`mirror/`) images |
 | `docs/` | Architecture, threat model and security guarantees |
@@ -44,8 +44,9 @@ it can write. agent-run enforces protections before the command runs.
 
 - One crate per problem, with one job and a narrow interface. The launcher only
   orchestrates and holds no problem-specific logic.
-- No async runtime, the `podman` CLI rather than an API client, and few dependencies,
-  each with a reason.
+- Solved problems (system calls, signals, randomness, password hashing, parsing) use
+  established, maintained crates, not code of our own; never write cryptography. The gate
+  stays dependency-free. No async runtime, and the `podman` CLI rather than an API client.
 - Errors are messages for the user: name the path, key or value and what to do.
 - Paths compare as canonical paths, never by name. Paths Podman's arguments can't carry
   safely (`,`, `:`, tabs, newlines) are refused, not escaped.
@@ -67,10 +68,13 @@ cargo clippy --all-targets
 cargo fmt --all --check                     # code is formatted with rustfmt's defaults
 ```
 
+The launcher's and workspace's tests use macOS APIs: run them on macOS. Linux runs only the
+portable crates (such as `buildrun`) and is not the release gate.
+
 CI (`.github/workflows/build.yml`) runs formatting, clippy and the unit tests on macOS, checks
 the oldest supported Rust (`rust-version`), and builds every image on arm64 Linux. Image
 smoke tests exercise the gate hold/release protocol, agent CLI startup, Java majors,
-Playwright/Chromium rendering and infrastructure runtime binaries.
+offline Rust compile/test/fmt/Clippy, Playwright/Chromium rendering and infrastructure runtime binaries.
 
 ### Local release gate
 
@@ -78,8 +82,9 @@ Before accepting a release or dependency update, run the ignored Podman suites a
 macOS Apple Silicon with rootless krunkit/libkrun. Use disposable checkouts, scratch state
 and isolated namespaces, never personal credentials or the real `~/.agent-run`. Explicitly
 set `AGENT_RUN_TEST_ENGRAM_CORE` to a disposable, built fixture and
-`AGENT_RUN_TEST_WRAPPER_FROM` to a disposable checkout containing a Gradle wrapper before
-running. Use these explicit paths instead of the engram tests' personal-directory defaults.
+`AGENT_RUN_TEST_WRAPPER_FROM` to a disposable checkout containing a Gradle wrapper, and
+`AGENT_RUN_TEST_KOTLIN_WRAPPER_FROM` to a Kotlin Toolchain `kotlin` wrapper pinning 0.14.0 or
+newer, before running. Use these explicit paths instead of the engram tests' personal-directory defaults.
 
 Record the tested revision, OS/Podman/provider, exact commands and results. Include mount
 and case-alias protection, authenticated egress/revocation, lifecycle/rollback, multi-project
@@ -100,8 +105,11 @@ suites as verification gaps.
   `localhost/agent-run-mirror` (`proxy/mirror`). The agent's suites start real sessions with
   `tests/common` (a scratch home and namespace, removed afterwards) and build the images if
   they're missing. `builds` also needs `AGENT_RUN_TEST_WRAPPER_FROM`, a checkout to copy a
-  Gradle wrapper from, and `agents` builds the Codex, Gemini and Pi images. The engram tests
-  copy engram-core with its built server. `cli` runs the public `agent` command, `rollback`
+  Gradle wrapper from, `kotlin` needs `AGENT_RUN_TEST_KOTLIN_WRAPPER_FROM`, a 0.14.0
+  or newer `kotlin` wrapper to copy, and `agents` builds the Codex, Gemini and Pi images. The engram tests
+  copy engram-core with its built server. `rust` tests `cargo-run` with an offline disposable
+  project and host-target sentinels; it needs no Gradle wrapper fixture.
+  `cli` runs the public `agent` command, `rollback`
   injects failures after each start step (`AGENT_RUN_FAIL_AFTER`, in that test binary only)
   (`AGENT_RUN_TEST_ENGRAM_CORE`). `podman`, `vision` and `engram` use the build image.
 - Check that a new test can fail: break the code, run it, restore the code.

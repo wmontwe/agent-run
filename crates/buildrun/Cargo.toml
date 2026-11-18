@@ -4,11 +4,19 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
-description = "gradle-run: runs the project's Gradle wrapper in its build container, for agents in the same pod."
+description = "Runs Gradle, Cargo and Kotlin Toolchain in the project build container."
 
 [[bin]]
 name = "gradle-run"
 path = "src/bin/gradle-run.rs"
+
+[[bin]]
+name = "cargo-run"
+path = "src/bin/cargo-run.rs"
+
+[[bin]]
+name = "kotlin-run"
+path = "src/bin/kotlin-run.rs"
 
 [[bin]]
 name = "gradle-run-server"
@@ -16,4 +24,5 @@ path = "src/bin/gradle-run-server.rs"
 
 [dependencies]
 md-5.workspace = true
+rustix = { version = "1.1.6", features = ["process"] }
 sha2.workspace = true

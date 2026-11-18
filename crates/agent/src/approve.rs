@@ -88,7 +88,7 @@ fn change(
         .map_err(|e| e.to_string())?
     {
         services
-            .rules(&paths.load_policy()?, paths)
+            .rules(paths)
             .map_err(|e| format!("the change is saved, but the proxy didn't apply it: {e}. Run the same command again to retry"))?;
     }
     for message in outcome? {

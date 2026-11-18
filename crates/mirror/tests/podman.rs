@@ -72,6 +72,7 @@ fn builds_read_through_the_mirror_and_the_mirror_reaches_its_remotes_only() {
         service: mirror::service(&podman, &ns, &state_dir),
         volume: ns.name("mirror-data"),
         image: "localhost/agent-run-mirror",
+        tls: mirror::Tls::new(state_dir.join("mirror-tls")),
     };
     mirror.service.network().unwrap();
     let (container, network) = (
@@ -91,7 +92,7 @@ fn builds_read_through_the_mirror_and_the_mirror_reaches_its_remotes_only() {
     let proxy = Egress {
         service: egress::service(&podman, &ns, &state_dir),
         image: "localhost/agent-run-proxy",
-        mirror: Some(("mirror", 8080)),
+        mirror: Some(("mirror", mirror::PORT)),
     };
     let pods = [
         PodEgress {
@@ -115,6 +116,8 @@ fn builds_read_through_the_mirror_and_the_mirror_reaches_its_remotes_only() {
         )
         .unwrap();
     mirror.service.connect(&pod).unwrap();
+    // Clients trust agent-run's authority, as build containers do.
+    let ca = format!("{}:/ca.crt:ro,z", mirror.tls.ca_cert().display());
     let image = image();
     for (name, net) in [(&client, &pod), (&inside, &network)] {
         podman
@@ -127,6 +130,8 @@ fn builds_read_through_the_mirror_and_the_mirror_reaches_its_remotes_only() {
                 &ns.label(),
                 "--network",
                 net,
+                "-v",
+                &ca,
                 "--entrypoint",
                 "sleep",
                 &image,
@@ -136,14 +141,19 @@ fn builds_read_through_the_mirror_and_the_mirror_reaches_its_remotes_only() {
     }
     // Squid and Reposilite take a few seconds to start; a fetch before the proxy answers
     // would fail.
-    let pom = "http://mirror:8080/central/junit/junit/4.13.2/junit-4.13.2.pom";
+    let pom = "https://mirror:8443/central/junit/junit/4.13.2/junit-4.13.2.pom";
     let deadline = Instant::now() + Duration::from_secs(60);
     while (status(
         &inside,
         "https://repo.maven.apache.org/maven2/",
         &["-x", "http://proxy:3128"],
     ) != "200 200"
-        || status(&client, "http://mirror:8080/", &["--noproxy", "*"]).ends_with("000"))
+        || status(
+            &client,
+            "https://mirror:8443/",
+            &["--noproxy", "*", "--cacert", "/ca.crt"],
+        )
+        .ends_with("000"))
         && Instant::now() < deadline
     {
         sleep(Duration::from_secs(1));
@@ -152,26 +162,58 @@ fn builds_read_through_the_mirror_and_the_mirror_reaches_its_remotes_only() {
     let checks = [
         (
             "an artifact through the mirror",
-            status(&client, pom, &["--noproxy", "*"]),
+            status(&client, pom, &["--noproxy", "*", "--cacert", "/ca.crt"]),
             "000 200",
+        ),
+        (
+            "the mirror without agent-run's authority",
+            status(&client, pom, &["--noproxy", "*"]),
+            "000 000",
         ),
         (
             "the same through the proxy, as the SDK library sends it",
-            status(&client, pom, &["-x", "http://proxy:3128"]),
-            "000 200",
+            status(
+                &client,
+                pom,
+                &["-x", "http://proxy:3128", "--cacert", "/ca.crt"],
+            ),
+            "200 200",
         ),
         (
+            // The proxy can't see into the tunnel: the mirror refuses the write itself.
             "a write to the mirror through the proxy",
             status(
                 &client,
                 pom,
-                &["-x", "http://proxy:3128", "-X", "PUT", "-d", "x"],
+                &[
+                    "-x",
+                    "http://proxy:3128",
+                    "--cacert",
+                    "/ca.crt",
+                    "-X",
+                    "PUT",
+                    "-d",
+                    "x",
+                ],
             ),
-            "000 403",
+            "200 401",
         ),
         (
             "a write to the mirror",
-            status(&client, pom, &["--noproxy", "*", "-X", "PUT", "-d", "x"]),
+            status(
+                &client,
+                pom,
+                &[
+                    "--noproxy",
+                    "*",
+                    "--cacert",
+                    "/ca.crt",
+                    "-X",
+                    "PUT",
+                    "-d",
+                    "x",
+                ],
+            ),
             "000 401",
         ),
         (

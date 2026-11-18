@@ -8,6 +8,7 @@ description = "The Reposilite mirror: Maven repositories, Gradle distributions a
 
 [dependencies]
 podman = { path = "../podman" }
+rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pem", "x509-parser"] }
 
 [dev-dependencies]
 egress = { path = "../egress" }
