@@ -22,7 +22,7 @@ gate() {
     test -z "$(podman logs "$container")"
     podman exec "$container" "$binary" release
     test "$(podman wait "$container")" = 0
-    podman logs "$container" | grep '^target 0 [0-9][0-9]* [0-9][0-9]*$'
+    podman logs "$container" | grep '^target 0 [0-9][0-9]* [0-9][0-9]* [0-9][0-9]*$'
     podman rm "$container" >/dev/null
 }
 

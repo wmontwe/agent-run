@@ -14,7 +14,7 @@ RUN cargo build --release --locked -p gate -p buildrun \
 
 # The Playwright MCP server and its dependencies, pinned with checksums in
 # build-image/browser/package-lock.json; install scripts never run.
-FROM docker.io/library/node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370 AS browser
+FROM docker.io/library/node:26-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS browser
 COPY build-image/browser/package.json build-image/browser/package-lock.json /opt/browser/
 RUN cd /opt/browser && npm ci --ignore-scripts --no-audit --no-fund
 

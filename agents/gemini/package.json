@@ -3,6 +3,6 @@
   "private": true,
   "dependencies": {
     "@google/gemini-cli": "0.67.0",
-    "@playwright/mcp": "0.0.84"
+    "@playwright/mcp": "0.0.85"
   }
 }
