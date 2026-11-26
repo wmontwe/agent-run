@@ -60,7 +60,7 @@ storage to communicate with the host save process.
 | `sessions` | Agent-container preparation and arguments, independent of CLI conventions. |
 | `builds` / `buildrun` | Build-container state, typed Gradle/Cargo/Kotlin Toolchain backends and their shared request/queue/output protocol. |
 | `vision` | Per-session display and browser in the build container. |
-| `egress` / `approvals` | Proxy rules, denials, session grants and persistent approval edits. |
+| `egress` / `approvals` | Proxy rules, denials, session grants and persistent approval edits (destinations and relay repositories). |
 | `relay` / `mirror` | Restricted GitHub API access and dependency repository configuration. |
 | `engram` | Separate context service, socket/mounts and requested host saves. |
 | `agent` | Composition, progress, public commands and lifecycle ownership. |

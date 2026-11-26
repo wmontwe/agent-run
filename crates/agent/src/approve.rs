@@ -127,6 +127,44 @@ pub fn revoke(
     })
 }
 
+/// A GitHub repository approval: for the project's pod, not one agent (the relay tells pods
+/// apart), so no agent is looked up.
+fn change_repo(
+    paths: &Paths,
+    folder: &Path,
+    apply: impl FnOnce(&approvals::RepoProject, &policy::Policy, bool) -> Result<Vec<String>, String>,
+) -> Result<(), String> {
+    change(paths, folder, None, |target, policy, running| {
+        let project = approvals::RepoProject {
+            checkout: target.checkout,
+            id: target.id,
+            policy_file: target.policy_file,
+            home: target.home,
+            state_dir: target.state_dir,
+        };
+        apply(&project, policy, running)
+    })
+}
+
+pub fn allow_repo(
+    folder: &Path,
+    value: &str,
+    scope: approvals::RepoScope,
+    paths: &Paths,
+) -> Result<(), String> {
+    let repo = approvals::parse_repository(value).map_err(|e| e.to_string())?;
+    change_repo(paths, folder, |project, policy, running| {
+        approvals::allow_repo(project, policy, &repo, scope, running).map_err(|e| e.to_string())
+    })
+}
+
+pub fn revoke_repo(folder: &Path, value: &str, global: bool, paths: &Paths) -> Result<(), String> {
+    let repo = approvals::parse_repository(value).map_err(|e| e.to_string())?;
+    change_repo(paths, folder, |project, policy, _| {
+        approvals::revoke_repo(project, policy, &repo, global).map_err(|e| e.to_string())
+    })
+}
+
 /// The project's recently refused destinations, newest first, with the agent (or build).
 pub fn denied(folder: &Path, paths: &Paths) -> Result<(), String> {
     let podman = Podman::default();
@@ -163,6 +201,12 @@ pub fn show(folder: &Path, paths: &Paths) -> Result<(), String> {
     let project = project(&Podman::default(), paths, folder)?;
     let policy = paths.load_policy()?;
     print!("{}", policy.describe(&project.checkout, &[]));
+    let repos = approvals::SessionRepos::new(&paths.state, &project.id)
+        .list()
+        .map_err(|e| e.to_string())?;
+    if !repos.is_empty() {
+        println!("  GitHub until restart: {}", repos.join(", "));
+    }
     for agent in agents::Agent::ALL {
         let grants = policy.for_agent(&project.checkout, agent.name());
         let session = approvals::Session::new(&paths.state, &project.id, agent.name())

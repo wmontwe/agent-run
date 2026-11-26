@@ -305,8 +305,11 @@ served only to that project's pod (the relay tells pods apart by their network):
 repos = ["owner/tool-this-project-reads"]
 ```
 
-Edits apply when a session next starts (or with any `agent allow`/`agent revoke`), also for
-sessions already running.
+`agent allow --github owner/repo` approves a repository for the project's pod until it's
+removed; `--project` writes the project's list and `--global` the one above. `agent revoke
+--github owner/repo [--global]` withdraws it. These apply live. Edits by hand apply when a
+session next starts (or with any `agent allow`/`agent revoke`), also for sessions already
+running.
 
 ## Project-specific grants
 

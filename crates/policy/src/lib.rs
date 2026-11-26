@@ -424,7 +424,9 @@ pub fn project_path(key: &str, home: &Path) -> Result<PathBuf, PolicyError> {
     absolute(key, home).map_err(|e| error(format!("projects.\"{key}\": {e}")))
 }
 
-fn repos(values: &[String], key: &str) -> Result<Vec<String>, PolicyError> {
+/// Whether `value` is a GitHub `owner/repo` the relay's map can carry: letters, digits, `-`,
+/// `_` and `.`, neither part `.` or `..`.
+pub fn is_repository(value: &str) -> bool {
     let part_ok = |p: &str| {
         !p.is_empty()
             && p != "."
@@ -432,13 +434,14 @@ fn repos(values: &[String], key: &str) -> Result<Vec<String>, PolicyError> {
             && p.bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
     };
-    for value in values {
-        match value.split_once('/') {
-            Some((owner, repo)) if part_ok(owner) && part_ok(repo) => {}
-            _ => {
-                return Err(error(format!("{key}: \"{value}\" must be owner/repo")));
-            }
-        }
+    value
+        .split_once('/')
+        .is_some_and(|(owner, repo)| part_ok(owner) && part_ok(repo))
+}
+
+fn repos(values: &[String], key: &str) -> Result<Vec<String>, PolicyError> {
+    if let Some(value) = values.iter().find(|v| !is_repository(v)) {
+        return Err(error(format!("{key}: \"{value}\" must be owner/repo")));
     }
     Ok(values.to_vec())
 }

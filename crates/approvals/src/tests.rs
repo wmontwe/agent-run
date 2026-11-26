@@ -238,3 +238,141 @@ fn edits_are_checked_before_they_are_written() {
     );
     fs::remove_dir_all(dir).unwrap();
 }
+
+fn repo_project(checkout: &str) -> RepoList<'static> {
+    RepoList::Project {
+        checkout: Box::leak(PathBuf::from(checkout).into_boxed_path()),
+        home: Path::new(HOME),
+    }
+}
+
+#[test]
+fn adds_repositories_to_a_project_and_globally() {
+    let text = policy_add_repo(
+        POLICY,
+        repo_project("/Users/me/Projects/tmc"),
+        "openclaw/gitcrawl",
+    )
+    .unwrap()
+    .unwrap();
+    assert!(
+        text.contains("network.github.repos = [\"openclaw/gitcrawl\"]"),
+        "{text}"
+    );
+    assert!(text.contains("# an approved destination"), "{text}");
+    let policy = valid(&text);
+    assert_eq!(
+        policy.projects[Path::new("/Users/me/Projects/tmc")].github_repos,
+        ["openclaw/gitcrawl"]
+    );
+    assert!(policy.github_repos.is_empty(), "the project's only");
+    assert_eq!(
+        policy_add_repo(
+            &text,
+            repo_project("/Users/me/Projects/tmc"),
+            "OpenClaw/GitCrawl"
+        )
+        .unwrap(),
+        None,
+        "GitHub's names are case-insensitive"
+    );
+
+    let text = policy_add_repo(&text, RepoList::Global, "octocat/Hello-World")
+        .unwrap()
+        .unwrap();
+    assert!(
+        text.contains("[network.github]\nrepos = [\"octocat/Hello-World\"]"),
+        "{text}"
+    );
+    assert_eq!(valid(&text).github_repos, ["octocat/Hello-World"]);
+
+    let text = policy_remove_repo(
+        &text,
+        repo_project("/Users/me/Projects/tmc"),
+        "openclaw/gitcrawl",
+    )
+    .unwrap()
+    .unwrap();
+    assert!(
+        valid(&text).projects[Path::new("/Users/me/Projects/tmc")]
+            .github_repos
+            .is_empty()
+    );
+    assert_eq!(
+        policy_remove_repo(&text, repo_project("/Users/me/Projects/other"), "a/b").unwrap(),
+        None
+    );
+}
+
+#[test]
+fn a_projects_temporary_repositories_go_with_its_approvals() {
+    let state = std::env::temp_dir().join(format!("approvals-repos-{}", std::process::id()));
+    let repos = SessionRepos::new(&state, "tmc-1234");
+    assert!(repos.list().unwrap().is_empty());
+    assert!(repos.add("openclaw/gitcrawl").unwrap());
+    assert!(!repos.add("OpenClaw/gitcrawl").unwrap());
+    assert_eq!(repos.list().unwrap(), ["openclaw/gitcrawl"]);
+    assert!(
+        Session::new(&state, "tmc-1234", "pi")
+            .list()
+            .unwrap()
+            .is_empty(),
+        "not an agent's destinations"
+    );
+    Session::clear_project(&state, "tmc-1234").unwrap();
+    assert!(repos.list().unwrap().is_empty(), "removed with the pod");
+    assert!(parse_repository("no-slash").is_err());
+    assert!(parse_repository("owner/..").is_err());
+    let _ = fs::remove_dir_all(state);
+}
+
+#[test]
+fn approving_a_repository_picks_the_list_by_scope() {
+    let dir = std::env::temp_dir().join(format!("approvals-allow-repo-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("policy.toml");
+    fs::write(&path, POLICY).unwrap();
+    let checkout = Path::new("/Users/me/Projects/tmc");
+    let project = RepoProject {
+        checkout,
+        id: "tmc-1234",
+        policy_file: &path,
+        home: Path::new(HOME),
+        state_dir: &dir,
+    };
+    let load = || valid(&fs::read_to_string(&path).unwrap());
+
+    let refused = allow_repo(&project, &load(), "a/temporary", RepoScope::Session, false);
+    assert!(refused.unwrap_err().0.contains("no session runs"));
+    allow_repo(&project, &load(), "a/temporary", RepoScope::Session, true).unwrap();
+    assert_eq!(
+        SessionRepos::new(&dir, "tmc-1234").list().unwrap(),
+        ["a/temporary"]
+    );
+    assert!(
+        load().projects[checkout].github_repos.is_empty(),
+        "not in the policy"
+    );
+
+    allow_repo(&project, &load(), "a/project", RepoScope::Project, false).unwrap();
+    assert_eq!(load().projects[checkout].github_repos, ["a/project"]);
+    allow_repo(&project, &load(), "a/global", RepoScope::Global, false).unwrap();
+    assert_eq!(load().github_repos, ["a/global"]);
+    let again = allow_repo(&project, &load(), "a/global", RepoScope::Project, true).unwrap();
+    assert!(again[0].contains("every project"), "{again:?}");
+
+    revoke_repo(&project, &load(), "a/temporary", false).unwrap();
+    revoke_repo(&project, &load(), "a/project", false).unwrap();
+    assert!(
+        SessionRepos::new(&dir, "tmc-1234")
+            .list()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(load().projects[checkout].github_repos.is_empty());
+    let global = revoke_repo(&project, &load(), "a/global", false).unwrap_err();
+    assert!(global.0.contains("--global"), "{global}");
+    revoke_repo(&project, &load(), "a/global", true).unwrap();
+    assert!(load().github_repos.is_empty());
+    let _ = fs::remove_dir_all(dir);
+}

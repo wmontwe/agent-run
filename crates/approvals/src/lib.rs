@@ -1,4 +1,4 @@
-//! Approved egress destinations: session
+//! Approved egress destinations and GitHub repositories: session
 //! approvals, kept in the state folder until the project's pod is removed, and project and
 //! global approvals, edited in `policy.toml` with the user's comments and layout kept.
 //!
@@ -6,8 +6,13 @@
 //! start and end rebuilds the proxy's rules from the policy and these files.
 
 mod commands;
+mod repos;
 
 pub use commands::{Project, Scope, allow, parse_destination, revoke};
+pub use repos::{
+    RepoList, RepoProject, RepoScope, SessionRepos, allow_repo, parse_repository, policy_add_repo,
+    policy_remove_repo, revoke_repo,
+};
 
 use policy::{Destination, destination, project_path};
 use std::fmt;

@@ -209,10 +209,20 @@ agent policy show
 
 - `agent revoke example.org --global` removes a shared-list approval.
 
+GitHub repositories, read-only through the relay, are approved for the project's pod
+rather than one agent:
+
+```sh
+agent allow --github owner/repo              # until the project's pod is removed
+agent allow --github owner/repo --project    # this project, in the policy
+agent allow --github owner/repo --global     # every project, in the policy
+agent revoke --github owner/repo [--global]
+```
+
 Agents' global instructions tell them that a proxy 403 means a refused destination: they
 stop and name the host instead of working around it. They're also told that GitHub is
-reachable only through the read-only relay (`$GITHUB_API_URL`), for the repositories in
-`[network.github] repos`.
+reachable only through the read-only relay (`$GITHUB_API_URL`), and to name the
+repository they need for `agent allow --github`.
 
 Successful approval/revocation applies without restarting sessions. Already-open
 connections can remain usable after revocation until they close. If applying a change

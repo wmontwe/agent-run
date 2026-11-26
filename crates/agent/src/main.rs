@@ -8,6 +8,9 @@
 //! agent shutdown [--force]   stop everything agent-run runs; volumes stay. --force ends sessions
 //! agent allow HOST[:PORT] [--session | --project] [--agent NAME]   approve for one agent
 //! agent revoke HOST[:PORT] [--agent NAME | --global]                withdraw an approval
+//! agent allow --github OWNER/REPO [--session | --project | --global]  read-only GitHub, for
+//!                                                     this project's pod or every project
+//! agent revoke --github OWNER/REPO [--global]
 //! agent denied               what this project's sessions were refused
 //! agent policy show          what the policy grants here
 //! ```
@@ -37,6 +40,15 @@ fn main() -> ExitCode {
         ["restart"] => done(here().and_then(|c| session::restart(&c))),
         ["shutdown"] => done(paths().and_then(|p| session::shutdown(&p, false))),
         ["shutdown", "--force"] => done(paths().and_then(|p| session::shutdown(&p, true))),
+        ["allow", "--github", repo, ref flags @ ..] => {
+            done(here().and_then(|c| approve::allow_repo(&c, repo, repo_scope(flags)?, &paths()?)))
+        }
+        ["revoke", "--github", repo] => {
+            done(here().and_then(|c| approve::revoke_repo(&c, repo, false, &paths()?)))
+        }
+        ["revoke", "--github", repo, "--global"] => {
+            done(here().and_then(|c| approve::revoke_repo(&c, repo, true, &paths()?)))
+        }
         ["allow", host, ref flags @ ..] => done(here().and_then(|c| {
             let (scope, agent) = options(flags)?;
             approve::allow(&c, host, scope, agent, &paths()?)
@@ -54,7 +66,7 @@ fn main() -> ExitCode {
             here().and_then(|c| run(agent, &c, &args[1..1 + command.len()]))
         }
         _ => Err(format!(
-            "usage: agent {} [COMMAND [ARGS...]] | restart | shutdown [--force] | allow HOST[:PORT] [--session|--project] [--agent NAME] | revoke HOST[:PORT] [--agent NAME | --global] | denied | policy show",
+            "usage: agent {} [COMMAND [ARGS...]] | restart | shutdown [--force] | allow HOST[:PORT] [--session|--project] [--agent NAME] | revoke HOST[:PORT] [--agent NAME | --global] | allow --github OWNER/REPO [--session|--project|--global] | revoke --github OWNER/REPO [--global] | denied | policy show",
             names.join("|")
         )),
     };
@@ -92,6 +104,19 @@ fn options<'a>(flags: &[&'a str]) -> Result<(Scope, Option<&'a str>), String> {
         }
     }
     Ok((scope, agent))
+}
+
+/// `allow --github`'s scope: temporary unless `--project` or `--global`.
+fn repo_scope(flags: &[&str]) -> Result<approvals::RepoScope, String> {
+    match flags {
+        [] | ["--session"] => Ok(approvals::RepoScope::Session),
+        ["--project"] => Ok(approvals::RepoScope::Project),
+        ["--global"] => Ok(approvals::RepoScope::Global),
+        _ => Err(format!(
+            "allow --github OWNER/REPO takes one of --session, --project or --global, not {}",
+            flags.join(" ")
+        )),
+    }
 }
 
 /// The checkout: always the current folder.

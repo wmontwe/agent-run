@@ -126,13 +126,19 @@ impl<'a> Services<'a> {
                 });
             }
             let subnet = egress::subnet(self.podman, &project.network()).map_err(|e| err(&e))?;
+            let mut repos = policy
+                .projects
+                .get(&checkout)
+                .map(|p| p.github_repos.clone())
+                .unwrap_or_default();
+            repos.extend(
+                approvals::SessionRepos::new(&paths.state, &project.id)
+                    .list()
+                    .map_err(|e| err(&e))?,
+            );
             relay_pods.push(relay::PodRepos {
                 subnet: subnet.clone(),
-                repos: policy
-                    .projects
-                    .get(&checkout)
-                    .map(|p| p.github_repos.clone())
-                    .unwrap_or_default(),
+                repos,
             });
             pods.push(PodEgress {
                 subnet,

@@ -22,7 +22,7 @@ it can write. agent-run enforces protections before the command runs.
 | `crates/podman` | Podman process execution, shared-service lifecycle and object names |
 | `crates/pod` | A project pod's lifecycle, its names and the plan it started with |
 | `crates/egress` | The egress proxy's configuration, and the denials in its log |
-| `crates/approvals` | Approved destinations: what `allow` and `revoke` change, session approvals, policy edits |
+| `crates/approvals` | Approved destinations and GitHub repositories: what `allow` and `revoke` change, session approvals, policy edits |
 | `crates/relay` | The GitHub relay's repository map |
 | `crates/mirror` | The dependency mirror's configuration and allowlist |
 | `crates/agents` | Each agent CLI's conventions: its command line with the session's MCP servers, its global instructions, its files |
