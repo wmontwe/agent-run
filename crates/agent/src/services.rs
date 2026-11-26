@@ -61,7 +61,6 @@ impl<'a> Services<'a> {
             .service
             .connect(&self.mirror.service.network)
             .map_err(err)?;
-        self.relay.ensure(&policy.github_repos).map_err(err)?;
         let proxy = self
             .proxy
             .service
@@ -78,12 +77,13 @@ impl<'a> Services<'a> {
 
     /// Writes the proxy's rules: each of the namespace's pods gets its project's shared list,
     /// and each running session its agent's destinations and approvals in the project; the
-    /// mirror its remotes' hosts.
+    /// mirror its remotes' hosts. The relay gets the global repositories and each pod's own.
     pub fn rules(&self, paths: &Paths) -> Result<(), String> {
         // Session teardown must not restore grants from that session's startup snapshot.
         let policy = paths.load_policy()?;
         let err = |e: &dyn std::fmt::Display| e.to_string();
         let mut pods = Vec::new();
+        let mut relay_pods = Vec::new();
         let mut passwords = Vec::new();
         for checkout in pod::checkouts(self.podman, &paths.namespace).map_err(|e| err(&e))? {
             let project = Project::new(&paths.namespace, &checkout);
@@ -125,8 +125,17 @@ impl<'a> Services<'a> {
                     local: vec![],
                 });
             }
+            let subnet = egress::subnet(self.podman, &project.network()).map_err(|e| err(&e))?;
+            relay_pods.push(relay::PodRepos {
+                subnet: subnet.clone(),
+                repos: policy
+                    .projects
+                    .get(&checkout)
+                    .map(|p| p.github_repos.clone())
+                    .unwrap_or_default(),
+            });
             pods.push(PodEgress {
-                subnet: egress::subnet(self.podman, &project.network()).map_err(|e| err(&e))?,
+                subnet,
                 allow,
                 sessions,
             });
@@ -147,7 +156,11 @@ impl<'a> Services<'a> {
                 sessions: vec![],
             });
         }
-        self.proxy.ensure(&pods, &passwords).map_err(|e| err(&e))
+        self.proxy.ensure(&pods, &passwords).map_err(|e| err(&e))?;
+        // The relay's per-project repositories follow the same pods and the same fresh policy.
+        self.relay
+            .ensure(&policy.github_repos, &relay_pods)
+            .map_err(|e| err(&e))
     }
 
     /// A new session identity for `agent`: a random user and password, their htpasswd line kept

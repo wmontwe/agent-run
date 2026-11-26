@@ -32,6 +32,11 @@ impl Policy {
             .get(checkout)
             .map(|p| p.allow.iter().map(Destination::short).collect())
             .unwrap_or_default();
+        let own_repos: Vec<String> = self
+            .projects
+            .get(checkout)
+            .map(|p| p.github_repos.clone())
+            .unwrap_or_default();
         let rows = [
             (
                 "reaches",
@@ -54,6 +59,7 @@ impl Policy {
         out += &format!("{}\n", checkout.display());
         let mut project = vec![
             ("also reaches", list(own)),
+            ("also GitHub", list(own_repos)),
             ("this session", list(session.iter().map(Destination::short))),
             (
                 "build-only hosts",
@@ -78,7 +84,7 @@ mod tests {
 
     #[test]
     fn describes_global_project_and_session_grants() {
-        let text = "version = 1\n[network.project]\nallow = [\"api.anthropic.com\"]\n[projects.\"/work/tmc\"]\nnetwork.project.allow = [\"example.org:8443\"]\n";
+        let text = "version = 1\n[network.project]\nallow = [\"api.anthropic.com\"]\n[projects.\"/work/tmc\"]\nnetwork.project.allow = [\"example.org:8443\"]\nnetwork.github.repos = [\"openclaw/gitcrawl\"]\n";
         let policy = parse(text, Path::new("/Users/me")).unwrap();
         let text = policy.describe(
             Path::new("/work/tmc"),
@@ -94,6 +100,10 @@ mod tests {
         );
         assert!(
             text.contains("  this session:      example.net\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("  also GitHub:       openclaw/gitcrawl\n"),
             "{text}"
         );
         assert!(text.contains("  agent memory:      2048 MiB\n"), "{text}");

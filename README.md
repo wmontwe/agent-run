@@ -209,6 +209,11 @@ agent policy show
 
 - `agent revoke example.org --global` removes a shared-list approval.
 
+Agents' global instructions tell them that a proxy 403 means a refused destination: they
+stop and name the host instead of working around it. They're also told that GitHub is
+reachable only through the read-only relay (`$GITHUB_API_URL`), for the repositories in
+`[network.github] repos`.
+
 Successful approval/revocation applies without restarting sessions. Already-open
 connections can remain usable after revocation until they close. If applying a change
 fails, treat the error as unresolved rather than assuming access changed.
@@ -247,7 +252,8 @@ gradle-run test
 Agent containers have no JDK; every agent's global instructions tell it to use `gradle-run`.
 The build uses the project's shared build container, not the host Gradle installation.
 The image provides JDKs 11, 17, 21, and 25. Dependencies and Gradle distributions come
-through the configured mirror. See [Gradle configuration](docs/configuration.md#gradle-dependencies).
+through the configured mirror, and so do Robolectric's Android jars (from the remote for Maven
+Central). See [Gradle configuration](docs/configuration.md#gradle-dependencies).
 Project-declared mise tools are not installed.
 
 - Build state is stored under `/build-state`, separately from host build folders/caches.
@@ -364,8 +370,8 @@ agent is editing.
   `agent restart`.
 - Network access is limited to shared policy destinations, the agent's own destinations,
   and its approvals. Allowed services can still receive data an agent can read.
-- GitHub relay access is read-only for the repositories listed in policy. It does not
-  forward your GitHub credentials.
+- GitHub relay access is read-only for the repositories listed in policy: globally, or
+  for one project only. It does not forward your GitHub credentials.
 - On case-insensitive macOS filesystems, single-file mounts are not reliable protection
   against alternate spellings. `local.properties` is therefore accepted only with
   `sdk.dir` and `ndk.dir` entries. Agents and builds can read it but not change it. Do not

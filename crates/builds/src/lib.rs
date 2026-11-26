@@ -20,7 +20,8 @@ pub const PROXY_USER_LABEL: &str = "agent-run.build-proxy-user";
 /// Added to every agent's global instructions: compilers run in the build container.
 pub const INSTRUCTIONS: &str = "This container has no JDK or Gradle. Run Gradle tasks with `gradle-run <tasks>` \
      (e.g. `gradle-run test`), not `./gradlew`: it runs the project's Gradle wrapper in the project's build \
-     container (JDKs 11, 17, 21 and 25) and streams the output back. Build results are readable under \
+     container (JDKs 11, 17, 21 and 25) and streams the output back. \
+     Robolectric's Android jars come through the dependency mirror too. Build results are readable under \
      `/build-state`. This container also has no Rust toolchain. Use `cargo-run <arguments>` \
      (e.g. `cargo-run test`, `cargo-run fmt --all`, `cargo-run clippy --all-targets`) instead of `cargo`: \
      Rust runs in the same build container, with caches under `/build-state/rust/cargo` and target \
@@ -49,6 +50,30 @@ pub const INSTRUCTIONS: &str = "This container has no JDK or Gradle. Run Gradle 
 /// (the Android SDK library ignores `nonProxyHosts`; the proxy passes its reads).
 const JAVA_PROXY: &str = "-Dhttp.proxyHost=proxy -Dhttp.proxyPort=3128 -Dhttps.proxyHost=proxy -Dhttps.proxyPort=3128 \
      -Dhttp.nonProxyHosts=localhost|127.0.0.1|mirror";
+
+/// Maven Central's spellings, for the remote that serves it.
+const CENTRAL: [&str; 2] = [
+    "https://repo.maven.apache.org/maven2",
+    "https://repo1.maven.org/maven2",
+];
+
+/// Robolectric downloads its Android jars from Maven Central itself, in the test JVM, not
+/// through Gradle's repositories: its own setting points it at the mirror. Without a Central
+/// remote it's left alone, and egress refuses the download visibly.
+fn robolectric(settings: &Settings) -> String {
+    settings
+        .mirror_remotes
+        .iter()
+        .filter_map(|remote| remote.split_once('='))
+        .find(|(_, url)| CENTRAL.contains(&url.trim_end_matches('/')))
+        .map(|(id, _)| {
+            format!(
+                " -Drobolectric.dependency.repo.url={}/{id}",
+                settings.mirror_url
+            )
+        })
+        .unwrap_or_default()
+}
 
 /// What the build container gets from the policy and the checkout.
 pub struct Settings<'a> {
@@ -245,7 +270,11 @@ fn run_args(project: &Project, plan: &Plan, settings: &Settings) -> Vec<String> 
         ("AGENT_RUN_MIRROR_CA", buildrun::trust::CA.to_owned()),
         (
             "JAVA_TOOL_OPTIONS",
-            format!("{JAVA_PROXY} {}", buildrun::trust::java_options()),
+            format!(
+                "{JAVA_PROXY}{} {}",
+                robolectric(settings),
+                buildrun::trust::java_options()
+            ),
         ),
         // The server writes these before it serves (see buildrun::trust).
         ("CURL_CA_BUNDLE", buildrun::trust::BUNDLE.to_owned()),
@@ -370,6 +399,37 @@ mod tests {
     }
 
     #[test]
+    fn robolectric_uses_the_remote_that_serves_central() {
+        let settings = |remotes: &[&str]| Settings {
+            image: "img",
+            proxy: None,
+            memory: 1,
+            cpus: 1.0,
+            max_concurrent: 1,
+            mirror_remotes: remotes.iter().map(|r| r.to_string()).collect(),
+            mirror_url: "https://mirror:8443",
+            mirror_ca: Path::new("/ca.crt"),
+            sdk_dir: None,
+            host_sdk: None,
+            licenses_copied: Path::new("/nonexistent"),
+            link_mounts: vec![],
+        };
+        assert_eq!(
+            robolectric(&settings(&[
+                "google=https://dl.google.com/dl/android/maven2",
+                "mc=https://repo1.maven.org/maven2/",
+            ])),
+            " -Drobolectric.dependency.repo.url=https://mirror:8443/mc"
+        );
+        assert_eq!(
+            robolectric(&settings(&[
+                "google=https://dl.google.com/dl/android/maven2"
+            ])),
+            ""
+        );
+    }
+
+    #[test]
     fn the_sdk_is_also_where_local_properties_says() {
         let project = Project::new(&podman::Namespace::default(), Path::new("/Users/me/app"));
         let plan = Plan {
@@ -440,6 +500,12 @@ mod tests {
         assert!(env("AGENT_RUN_MIRROR_CA=/etc/agent-run/mirror-ca.crt"));
         assert!(env("CURL_CA_BUNDLE=/tmp/agent-run/ca-bundle.pem"));
         assert!(env("NODE_EXTRA_CA_CERTS=/etc/agent-run/mirror-ca.crt"));
+        assert!(
+            args.contains(
+                "-Drobolectric.dependency.repo.url=https://mirror:8443/central -Djavax.net.ssl"
+            ),
+            "Robolectric downloads through the mirror: {args}"
+        );
         assert!(
             argv.iter()
                 .any(|a| a.starts_with("JAVA_TOOL_OPTIONS=-Dhttp.proxyHost=proxy")

@@ -18,6 +18,17 @@ use std::path::Path;
 pub const ALIAS: &str = "proxy";
 pub const PORT: u16 = 3128;
 
+/// Added to every agent's global instructions: a refused `CONNECT` surfaces as a generic
+/// tunnel error in most clients, so the agent is told what it means and who can change it.
+pub const INSTRUCTIONS: &str = "Network access goes through agent-run's egress proxy, which \
+     allows only destinations approved for this project. A refused destination fails with a \
+     proxy 403, such as `CONNECT tunnel failed, response 403` or `Proxy refused to open a tunnel: \
+     403 Forbidden`. Don't retry it or work around it (other hosts, mirrors, proxies or \
+     protocols). Stop and tell the user which host and port were refused and why you need them: \
+     they can run `agent denied` and `agent allow <host>` on the host, which applies without \
+     restarting this session. Build tools run through `gradle-run`, `cargo-run` and \
+     `kotlin-run` reach only the dependency mirror and `builds.allow` in the policy.";
+
 /// One project pod's egress: its network's subnet, the destinations every container of it may
 /// reach (the project's shared list), and its authenticated agents/build container.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -379,6 +390,14 @@ pub fn subnet(podman: &Podman, network: &str) -> Result<String, PodmanError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn instructions_name_the_failure_and_the_host_commands() {
+        assert!(INSTRUCTIONS.contains("403"));
+        assert!(INSTRUCTIONS.contains("`agent denied`"));
+        assert!(INSTRUCTIONS.contains("`agent allow <host>`"));
+        assert!(INSTRUCTIONS.contains("Don't retry it or work around it"));
+    }
 
     fn destination(host: &str, port: u16) -> Destination {
         Destination {

@@ -98,6 +98,7 @@ pub struct Project {
 #[serde(deny_unknown_fields)]
 pub struct ProjectNetwork {
     pub project: Option<Allow>,
+    pub github: Option<Github>,
 }
 
 #[derive(Deserialize)]

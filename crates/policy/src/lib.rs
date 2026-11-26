@@ -63,6 +63,8 @@ pub struct ProjectSettings {
     pub build_memory: Option<u64>,
     /// Each agent's own approvals in this project.
     pub agents: BTreeMap<String, Grants>,
+    /// Repositories the GitHub relay serves to this project only, on top of the global ones.
+    pub github_repos: Vec<String>,
     /// The project's engram package, declared, never detected.
     pub engram: Option<PathBuf>,
 }
@@ -195,6 +197,10 @@ pub fn parse(text: &str, home: &Path) -> Result<Policy, PolicyError> {
         // yet stays as written.
         let path = std::fs::canonicalize(&path).unwrap_or(path);
         let project_builds = project.builds;
+        let (network_project, network_github) = project
+            .network
+            .map(|n| (n.project, n.github))
+            .unwrap_or_default();
         let settings = ProjectSettings {
             build_allow: destinations(
                 &project_builds
@@ -204,11 +210,7 @@ pub fn parse(text: &str, home: &Path) -> Result<Policy, PolicyError> {
                 &format!("projects.\"{key}\".builds.allow"),
             )?,
             allow: destinations(
-                &project
-                    .network
-                    .and_then(|n| n.project)
-                    .map(|p| p.allow)
-                    .unwrap_or_default(),
+                &network_project.map(|p| p.allow).unwrap_or_default(),
                 &format!("projects.\"{key}\".network.project.allow"),
             )?,
             build_memory: project_builds
@@ -222,6 +224,10 @@ pub fn parse(text: &str, home: &Path) -> Result<Policy, PolicyError> {
                 })
                 .transpose()?,
             agents: grants(project.agents, &format!("projects.\"{key}\".agents"))?,
+            github_repos: repos(
+                &network_github.map(|g| g.repos).unwrap_or_default(),
+                &format!("projects.\"{key}\".network.github.repos"),
+            )?,
         };
         if projects.insert(path.clone(), settings).is_some() {
             return Err(error(format!("projects: {} appears twice", path.display())));
@@ -234,7 +240,10 @@ pub fn parse(text: &str, home: &Path) -> Result<Policy, PolicyError> {
             &network.project.map(|p| p.allow).unwrap_or_default(),
             "network.project.allow",
         )?,
-        github_repos: repos(&network.github.map(|g| g.repos).unwrap_or_default())?,
+        github_repos: repos(
+            &network.github.map(|g| g.repos).unwrap_or_default(),
+            "network.github.repos",
+        )?,
         mirror_remotes: remotes(raw.mirror.map(|m| m.remotes).unwrap_or_default())?,
         workspace: WorkspaceRules {
             mask: folders(&workspace.mask, "workspace.mask")?,
@@ -415,7 +424,7 @@ pub fn project_path(key: &str, home: &Path) -> Result<PathBuf, PolicyError> {
     absolute(key, home).map_err(|e| error(format!("projects.\"{key}\": {e}")))
 }
 
-fn repos(values: &[String]) -> Result<Vec<String>, PolicyError> {
+fn repos(values: &[String], key: &str) -> Result<Vec<String>, PolicyError> {
     let part_ok = |p: &str| {
         !p.is_empty()
             && p != "."
@@ -427,9 +436,7 @@ fn repos(values: &[String]) -> Result<Vec<String>, PolicyError> {
         match value.split_once('/') {
             Some((owner, repo)) if part_ok(owner) && part_ok(repo) => {}
             _ => {
-                return Err(error(format!(
-                    "network.github.repos: \"{value}\" must be owner/repo"
-                )));
+                return Err(error(format!("{key}: \"{value}\" must be owner/repo")));
             }
         }
     }

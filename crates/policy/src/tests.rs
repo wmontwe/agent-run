@@ -140,6 +140,27 @@ fn validates_repos_remotes_and_sizes() {
 }
 
 #[test]
+fn github_repos_are_global_or_a_projects_own() {
+    let policy = ok(r#"
+version = 1
+[network.github]
+repos = ["thunderbird/thunderbird-android"]
+[projects."/work/tfa".network.github]
+repos = ["openclaw/gitcrawl"]
+"#);
+    assert_eq!(policy.github_repos, ["thunderbird/thunderbird-android"]);
+    assert_eq!(
+        policy.projects[Path::new("/work/tfa")].github_repos,
+        ["openclaw/gitcrawl"]
+    );
+    let bad = err("version = 1\n[projects.\"/work/tfa\".network.github]\nrepos = [\"nope\"]");
+    assert!(
+        bad.contains("projects.\"/work/tfa\".network.github.repos: \"nope\" must be owner/repo"),
+        "{bad}"
+    );
+}
+
+#[test]
 fn projects_need_absolute_paths_and_merge_into_a_view() {
     assert!(err("version = 1\n[projects.\"relative/p\"]").contains("absolute"));
     assert!(err("version = 1\n[projects.\"~/a/../b\"]").contains(".."));

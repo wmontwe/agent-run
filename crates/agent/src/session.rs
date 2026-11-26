@@ -228,7 +228,11 @@ pub fn prepare(
                             format!("{name},type=mount,target={target},uid=0,gid=0,mode=0444"),
                         ]);
                     }
-                    let mut instructions_extra = vec![builds::INSTRUCTIONS];
+                    let mut instructions_extra = vec![
+                        builds::INSTRUCTIONS,
+                        egress::INSTRUCTIONS,
+                        relay::INSTRUCTIONS,
+                    ];
                     if engram.is_some() && !cli.reads_claude_local() {
                         instructions_extra.push(engram::Engram::INSTRUCTIONS);
                     }

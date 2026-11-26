@@ -39,14 +39,9 @@ fn status(client: &str, path: &str, extra: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
-#[test]
-#[ignore = "needs the Podman machine and the internet"]
-fn the_relay_reads_listed_repositories_only() {
-    let podman = Podman::default();
-    let id = std::process::id();
-    let ns = podman::Namespace::new(&format!("relay-test-{id}"));
-    let pod = ns.name("pod");
-    let client = format!("relay-test-client-{id}");
+/// An internal pod network and a client container on it with curl; returns the network's
+/// subnets as `podman network inspect` prints them.
+fn pod_with_client(podman: &Podman, ns: &podman::Namespace, pod: &str, client: &str) -> String {
     podman
         .run(&[
             "network",
@@ -54,30 +49,20 @@ fn the_relay_reads_listed_repositories_only() {
             "--internal",
             "--label",
             &ns.label(),
-            &pod,
+            pod,
         ])
         .unwrap();
-    let state_dir = std::env::temp_dir().join(format!("relay-test-{id}"));
-    fs::create_dir_all(&state_dir).unwrap();
-    let relay = Relay {
-        service: relay::service(&podman, &ns, &state_dir),
-        image: "localhost/agent-run-github-relay",
-    };
-    let container = relay.service.container.clone();
-    let mut repos = vec!["octocat/Hello-World".to_owned()];
-    relay.ensure(&repos).unwrap();
-    relay.service.connect(&pod).unwrap();
     let image = image();
     podman
         .run(&[
             "run",
             "-d",
             "--name",
-            &client,
+            client,
             "--label",
             &ns.label(),
             "--network",
-            &pod,
+            pod,
             "--read-only",
             "--cap-drop",
             "ALL",
@@ -87,6 +72,52 @@ fn the_relay_reads_listed_repositories_only() {
             "300",
         ])
         .unwrap();
+    podman
+        .run(&[
+            "network",
+            "inspect",
+            "--format",
+            "{{range .Subnets}}{{.Subnet}} {{end}}",
+            pod,
+        ])
+        .unwrap()
+        .trim()
+        .to_owned()
+}
+
+#[test]
+#[ignore = "needs the Podman machine and the internet"]
+fn the_relay_reads_listed_repositories_only() {
+    let podman = Podman::default();
+    let id = std::process::id();
+    let ns = podman::Namespace::new(&format!("relay-test-{id}"));
+    let (pod, other_pod) = (ns.name("pod"), ns.name("other-pod"));
+    let client = format!("relay-test-client-{id}");
+    let other_client = format!("relay-test-other-client-{id}");
+    let state_dir = std::env::temp_dir().join(format!("relay-test-{id}"));
+    fs::create_dir_all(&state_dir).unwrap();
+    let relay = Relay {
+        service: relay::service(&podman, &ns, &state_dir),
+        image: "localhost/agent-run-github-relay",
+    };
+    let container = relay.service.container.clone();
+    let subnet = pod_with_client(&podman, &ns, &pod, &client);
+    let other_subnet = pod_with_client(&podman, &ns, &other_pod, &other_client);
+    let mut repos = vec!["octocat/Hello-World".to_owned()];
+    // The first pod's project lists one more repository, for itself only.
+    let mut pods = vec![
+        relay::PodRepos {
+            subnet,
+            repos: vec!["octocat/git-consortium".to_owned()],
+        },
+        relay::PodRepos {
+            subnet: other_subnet,
+            repos: vec![],
+        },
+    ];
+    relay.ensure(&repos, &pods).unwrap();
+    relay.service.connect(&pod).unwrap();
+    relay.service.connect(&other_pod).unwrap();
     sleep(Duration::from_secs(2));
 
     let repo = "/repos/octocat/Hello-World";
@@ -147,13 +178,31 @@ fn the_relay_reads_listed_repositories_only() {
             status(&client, &format!("{repo}\\..\\..\\..\\user"), &[]),
             "403",
         ),
+        (
+            "the project's own repository, from its pod",
+            status(&client, "/repos/octocat/git-consortium", &[]),
+            "200",
+        ),
+        (
+            "another project's repository, from another pod",
+            status(&other_client, "/repos/octocat/git-consortium", &[]),
+            "403",
+        ),
+        (
+            "a global repository, from another pod",
+            status(&other_client, repo, &[]),
+            "200",
+        ),
     ];
 
-    // A change to the list applies live.
+    // Changes to the lists apply live: a global one, and a project's own.
     repos.push("octocat/Spoon-Knife".to_owned());
-    relay.ensure(&repos).unwrap();
+    pods[1].repos.push("octocat/linguist".to_owned());
+    relay.ensure(&repos, &pods).unwrap();
     sleep(Duration::from_secs(1));
     let after = status(&client, "/repos/octocat/Spoon-Knife", &[]);
+    let after_own = status(&other_client, "/repos/octocat/linguist", &[]);
+    let after_not_own = status(&client, "/repos/octocat/linguist", &[]);
     let restarts = podman
         .run(&[
             "container",
@@ -165,6 +214,7 @@ fn the_relay_reads_listed_repositories_only() {
         .unwrap();
 
     relay.service.disconnect(&pod).unwrap();
+    relay.service.disconnect(&other_pod).unwrap();
     ns.remove_all(&podman, &[]);
     let _ = fs::remove_dir_all(&state_dir);
     let failures: Vec<String> = checks
@@ -176,5 +226,10 @@ fn the_relay_reads_listed_repositories_only() {
     assert_eq!(
         after, "200",
         "added repository, after a live change ({restarts})"
+    );
+    assert_eq!(
+        (after_own.as_str(), after_not_own.as_str()),
+        ("200", "403"),
+        "a project's added repository, from its pod and another, after a live change"
     );
 }

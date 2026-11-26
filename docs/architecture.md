@@ -239,7 +239,9 @@ permit named host/port HTTP access.
 - Refuse unapproved names before address resolution, block private/host destinations
   except explicit narrow exceptions, restrict ports/methods and deny by default.
 - The GitHub relay fixes its upstream, restricts repository paths/methods and does not
-  forward host credentials.
+  forward host credentials. Global repositories are served to every pod; a project's own
+  only to clients in its pod network's subnets, the same identity the egress proxy uses.
+  Any other source address gets the global list only.
 - The dependency mirror serves configured remotes over HTTPS only, with agent-run's own
   certificate authority (created in trusted host state; its key is never mounted). Build
   containers mount its certificate; the build server writes a JVM trust store and a PEM

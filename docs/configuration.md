@@ -297,6 +297,17 @@ The relay permits read-only GitHub API access to listed repositories and does no
 forward host credentials. This is not authenticated private-repository access or
 permission to push. Agents receive its address through `GITHUB_API_URL`.
 
+List repositories every project uses here, and a project's own in its table; those are
+served only to that project's pod (the relay tells pods apart by their network):
+
+```toml
+[projects."~/Projects/app".network.github]
+repos = ["owner/tool-this-project-reads"]
+```
+
+Edits apply when a session next starts (or with any `agent allow`/`agent revoke`), also for
+sessions already running.
+
 ## Project-specific grants
 
 Project tables use checkout paths. `~/` expands to your home directory:
@@ -304,6 +315,7 @@ Project tables use checkout paths. `~/` expands to your home directory:
 ```toml
 [projects."~/Projects/app"]
 network.project.allow = ["downloads.example.org"]
+network.github.repos = ["owner/repository"]
 builds.memory = "20g"
 
 [projects."~/Projects/app".agents.pi]
