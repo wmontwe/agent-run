@@ -77,6 +77,25 @@ This permits that agent to contact an LLM service on your Mac at the named port.
 exceptions deliberately expose a host service to untrusted code. Enable only what you
 need. Replace the Pi table above with this block.
 
+### Pi packages
+
+Pi's image includes the [`pi-loop-police`](https://www.npmjs.com/package/pi-loop-police) and
+[`pi-subagents`](https://www.npmjs.com/package/pi-subagents) packages, pinned with Pi in
+`agents/pi/package-lock.json`. Packages installed on your Mac are not used: Pi in agent-run
+keeps its own settings in `~/.agent-run/pi/home`. Enable the included packages once, from
+a shell in Pi's container:
+
+```sh
+agent pi bash
+pi install /opt/agent/node_modules/pi-loop-police
+pi install /opt/agent/node_modules/pi-subagents
+```
+
+This lists their paths in Pi's `~/.pi/agent/settings.json`, so every later session and each
+subagent loads them without network access. `pi remove <path>` disables one again. A
+package installed from npm or git inside the container needs `registry.npmjs.org` or
+`github.com`, and its code runs with the agent's access.
+
 ## Other agents
 
 Add the agent's network hosts from [Agent network access](#agent-network-access), then run
